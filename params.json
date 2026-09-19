@@ -1,0 +1,37 @@
+{
+  "version": "0.1",
+  "window_name": "ОК-1",
+  "opening": { "width": 1500, "height": 1500, "seam": 30 },
+  "frame":   { "face_width": 60, "face_height": 60 },
+  "mullion": { "width": 80, "height": 80 },
+  "sash":    { "overlap": 15 },
+  "sill":    { "on": true, "height": 30 },
+  "addons":  { "left": 0, "right": 0, "top": 0 },
+  "cols": 3,
+  "rows": 2,
+  "separators": {
+    "vertical": [
+      { "index": 1, "kind": "MULLION" },
+      { "index": 2, "kind": "MULLION" }
+    ],
+    "horizontal": [
+      { "index": 1, "kind": "MULLION" }
+    ]
+  },
+  "cells": [
+    { "row": 1, "col": 1, "sash_type": "TURN" },
+    { "row": 1, "col": 2, "sash_type": "TURN_TILT" },
+    { "row": 1, "col": 3, "sash_type": "FIX" },
+    { "row": 2, "col": 1, "sash_type": "TILT" },
+    { "row": 2, "col": 2, "sash_type": "FIX" },
+    { "row": 2, "col": 3, "sash_type": "FIX" }
+  ],
+  "metadata": {
+    "object": "Тестовый объект",
+    "window_name": "ОК-1",
+    "color_out": "RAL 8017",
+    "color_in": "RAL 9016",
+    "glazing": 32
+  },
+  "view": "OUTSIDE"
+}
