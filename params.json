@@ -31,7 +31,7 @@
     "window_name": "ОК-1",
     "color_out": "RAL 8017",
     "color_in": "RAL 9016",
-    "glazing": 32
+    "glazing": "СПД42"
   },
   "view": "OUTSIDE"
 }

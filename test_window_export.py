@@ -118,29 +118,27 @@ class TestWindowExport(unittest.TestCase):
                     self.assertEqual(attr.dxf.layer, "Окна", f"Атрибут {attr.dxf.tag} должен быть на слое 'Окна'")
 
     def test_06_attributes_values(self):
-        """Сценарий 6: 8 атрибутов с корректными значениями (GRID строго 3x2 латиница)"""
+        """Сценарий 6: 6 атрибутов с корректными значениями (слитые строки) — GRID 3х2 кириллица"""
         doc = ezdxf.readfile("output/ОК-1.dxf")
         block_name = "WW_ОК-1_3x2_001"
         blk = doc.blocks[block_name]
         attdefs = {e.dxf.tag: e for e in blk if e.dxftype() == "ATTDEF"}
-        self.assertEqual(len(attdefs), 8, "В блоке должно быть ровно 8 ATTDEF")
+        self.assertEqual(len(attdefs), 6, "В блоке должно быть ровно 6 ATTDEF (слитые атрибуты)")
         expected_tags = {
             "OBJECT": "Тестовый объект",
-            "WINDOW_NAME": "ОК-1",
-            "COLOR_OUT": "RAL 8017",
-            "COLOR_IN": "RAL 9016",
-            "GLAZING": "32",
-            "SIZE_W": "1500",
-            "SIZE_H": "1500",
-            "GRID": "3x2",
+            "WINDOW": "ОК-1/1 шт.",
+            "COLOR": "RAL8017/RAL9016",
+            "GLAZING": "Заполнение СПД42",
+            "SIZE": "1500х1500",
+            "GRID": "3х2",
         }
         for tag, exp_val in expected_tags.items():
             self.assertIn(tag, attdefs, f"Тег {tag} должен присутствовать в ATTDEF")
             self.assertEqual(attdefs[tag].dxf.text, exp_val, f"Значение атрибута {tag}")
             self.assertNotIn("?", attdefs[tag].dxf.text, f"В тексте {tag} не должно быть '?'")
-            # Проверка что GRID использует латиницу x
-            if tag == "GRID":
-                self.assertIn("x", attdefs[tag].dxf.text)
+            # Проверка что SIZE и GRID используют кириллицу х (U+0445) как в примере
+            if tag in ("GRID", "SIZE"):
+                self.assertIn("х", attdefs[tag].dxf.text)
                 self.assertNotIn("×", attdefs[tag].dxf.text)
         # Проверка атрибутов у INSERT
         msp = doc.modelspace()
@@ -148,7 +146,7 @@ class TestWindowExport(unittest.TestCase):
         self.assertEqual(len(inserts), 1)
         ins = inserts[0]
         attrib_map = {a.dxf.tag: a.dxf.text for a in ins.attribs}
-        self.assertEqual(len(attrib_map), 8, "У INSERT должно быть 8 ATTRIB")
+        self.assertEqual(len(attrib_map), 6, "У INSERT должно быть 6 ATTRIB")
         for tag, exp_val in expected_tags.items():
             self.assertEqual(attrib_map.get(tag), exp_val)
 
@@ -240,7 +238,7 @@ class TestWindowExport(unittest.TestCase):
         self.assertAlmostEqual(m2["grid"]["cell_h"], expected_ch, places=5)
 
     def test_12_grid_1x1(self):
-        """Сценарий 12: Сетка 1×1: Только рама, 1 створка, 8 атрибутов, 0 импостов, открытие ДВ"""
+        """Сценарий 12: Сетка 1×1: Только рама, 1 створка, 6 атрибутов (слитые), 0 импостов, открытие ДВ"""
         p1 = copy.deepcopy(self.params)
         p1["cols"] = 1
         p1["rows"] = 1
@@ -252,7 +250,7 @@ class TestWindowExport(unittest.TestCase):
         self.assertEqual(len(m1["mullions_v"]), 0)
         self.assertEqual(len(m1["mullions_h"]), 0)
         self.assertEqual(len(m1["sashes"]), 1)
-        self.assertEqual(len(m1["attdefs"]), 8)
+        self.assertEqual(len(m1["attdefs"]), 6)
         # Проверка что створка имеет двухконтурный профиль и 45° стыки
         sash = m1["sashes"][0]
         self.assertEqual(len(sash["outer_contour"]), 4)

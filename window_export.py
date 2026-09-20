@@ -9,6 +9,7 @@ Window Block Export (WinPlax)
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import shutil
@@ -431,6 +432,50 @@ def calc_sashes(
     return sashes
 
 
+def _clip_line_to_rect(
+    x0: float, y0: float, x1: float, y1: float,
+    rx1: float, ry1: float, rx2: float, ry2: float,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """
+    Клип линии к прямоугольнику (rx1,ry1)-(rx2,ry2) по Liang-Barsky.
+    Возвращает обрезанный отрезок внутри прямоугольника или None если вне.
+    Используется для вида снаружи: рама/импост обрезают створку и засечки.
+    """
+    # Нормализуем прямоугольник
+    xmin = min(rx1, rx2)
+    xmax = max(rx1, rx2)
+    ymin = min(ry1, ry2)
+    ymax = max(ry1, ry2)
+    dx = x1 - x0
+    dy = y1 - y0
+    p = [-dx, dx, -dy, dy]
+    q = [x0 - xmin, xmax - x0, y0 - ymin, ymax - y0]
+    u1, u2 = 0.0, 1.0
+    for pi, qi in zip(p, q):
+        if pi == 0:
+            if qi < 0:
+                return None
+        else:
+            t = qi / pi if pi != 0 else 0
+            # pi <0 -> entering, pi>0 -> leaving
+            if pi < 0:
+                if t > u1:
+                    u1 = t
+            else:
+                if t < u2:
+                    u2 = t
+            if u1 > u2:
+                return None
+    if u1 > 1 or u2 < 0:
+        return None
+    # Обрезанные точки
+    nx0 = x0 + u1 * dx
+    ny0 = y0 + u1 * dy
+    nx1 = x0 + u2 * dx
+    ny1 = y0 + u2 * dy
+    return ((nx0, ny0), (nx1, ny1))
+
+
 def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     """
     Построение параметрической геометрической модели окна.
@@ -542,20 +587,83 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     # 6. Створки (двухконтурные + ГОСТ-стрелки)
     sashes = calc_sashes(cells, so, sw)
 
+    # 6b. Доработка: для вида снаружи рама/импосты обрезают створку и косые засечки
+    # Т.е. видимая часть створки ограничена ячейкой (cell), наружный контур и 45° засечки
+    # обрезаются по границе ячейки (которая совпадает с внутр. гранью рамы/импоста)
+    view_tmp = str(params.get("view", "OUTSIDE")).upper()
+    if view_tmp == "OUTSIDE":
+        for sash in sashes:
+            # Найти ячейку створки
+            cell = next((c for c in cells if (c["row"], c["col"]) == tuple(sash["cell"])), None)
+            if cell is None:
+                continue
+            rx1, ry1, rx2, ry2 = cell["x1"], cell["y1"], cell["x2"], cell["y2"]
+            # Обрезаем 45° засечки к ячейке
+            new_mitres: list[tuple[tuple[float, float], tuple[float, float]]] = []
+            for (x0, y0), (x1, y1) in sash.get("mitres", []):
+                clipped = _clip_line_to_rect(x0, y0, x1, y1, rx1, ry1, rx2, ry2)
+                if clipped is not None:
+                    # clipped уже внутри ячейки; но нужно сохранить только видимую часть
+                    # Для засечек обычно одна точка внутри (inner), вторая снаружи -> clipped даёт отрезок от границы ячейки до inner
+                    # Если линия полностью внутри (редкий случай) — оставляем как есть
+                    new_mitres.append(clipped)
+                else:
+                    # Линия полностью вне — не рисуем (обрезана рамой)
+                    pass
+            sash["mitres"] = new_mitres
+            # Для OUTSIDE наружный контур уже скрывается в export_to_dxf, но для модели тоже пометим обрезанным
+            # (не используется в примитивах для OUTSIDE)
+
     # 7. Подставочный профиль
     sill_poly = calc_sill(params, ow, s)
 
-    # 8. Атрибуты блока (8 шт. по ТЗ 0.2)
+    # 8. Атрибуты блока — доработка: сливаем в одну строку (6 шт.)
+    # Было 8: OBJECT, WINDOW_NAME, COLOR_OUT, COLOR_IN, GLAZING, SIZE_W, SIZE_H, GRID
+    # Стало 6: Тестовый объект / ОК-1/1 шт. / RAL8017/RAL9016 / Заполнение СПД42 / 1500х1500 / 3х2
     meta = params.get("metadata", {})
+    # Количество — по умолчанию 1 шт., можно задать quantity в metadata или params
+    qty_raw = meta.get("quantity", params.get("quantity", "1 шт."))
+    qty_str = str(qty_raw).strip()
+    # Если quantity уже содержит "/", не дублируем
+    window_combined = f"{window_name}/{qty_str}" if "/" not in qty_str else f"{window_name}{qty_str}"
+    # Цвета — сливаем без пробелов как в примере RAL8017/RAL9016
+    color_out_raw = str(meta.get("color_out", "RAL 8017"))
+    color_in_raw = str(meta.get("color_in", "RAL 9016"))
+    # Убираем пробелы для формата RAL8017
+    color_out_nospace = color_out_raw.replace(" ", "")
+    color_in_nospace = color_in_raw.replace(" ", "")
+    colors_combined = f"{color_out_nospace}/{color_in_nospace}"
+    # Заполнение — формат "Заполнение СПД42"
+    glazing_raw = meta.get("glazing", "СПД42")
+    if isinstance(glazing_raw, (int, float)):
+        # числовое -> СПД{число}
+        glazing_num = int(glazing_raw) if float(glazing_raw).is_integer() else glazing_raw
+        glazing_val = f"Заполнение СПД{glazing_num}"
+    else:
+        g_str = str(glazing_raw).strip()
+        if not g_str:
+            glazing_val = "Заполнение СПД42"
+        elif "Заполнение" in g_str:
+            glazing_val = g_str
+        elif "СПД" in g_str:
+            glazing_val = f"Заполнение {g_str}" if not g_str.startswith("СПД") else f"Заполнение {g_str}"
+            # если уже СПД42 -> Заполнение СПД42
+            if g_str.startswith("СПД"):
+                glazing_val = f"Заполнение {g_str}"
+        else:
+            # например "42" -> СПД42
+            glazing_val = f"Заполнение СПД{g_str}"
+    # Габарит — сливаем WхH кириллицей х (U+0445) как в примере 1500х1500
+    size_combined = f"{int(ow) if ow.is_integer() else ow}х{int(oh) if oh.is_integer() else oh}"
+    grid_combined = f"{cols}х{rows}"
+    object_val = str(meta.get("object", "Тестовый объект"))
     attdefs = [
-        ("OBJECT", "Объект", str(meta.get("object", "Тестовый объект"))),
-        ("WINDOW_NAME", "Название окна", window_name),
-        ("COLOR_OUT", "Цвет снаружи", str(meta.get("color_out", "RAL 8017"))),
-        ("COLOR_IN", "Цвет изнутри", str(meta.get("color_in", "RAL 9016"))),
-        ("GLAZING", "Толщина заполнения", str(meta.get("glazing", "32"))),
-        ("SIZE_W", "Ширина проёма", f"{int(ow) if ow.is_integer() else ow}"),
-        ("SIZE_H", "Высота проёма", f"{int(oh) if oh.is_integer() else oh}"),
-        ("GRID", "Сетка", f"{cols}x{rows}"),  # ТЗ 0.2: латинская x, без артефактов ?
+        ("OBJECT", "Объект", object_val),
+        ("WINDOW", "Окно / кол-во", window_combined),
+        ("COLOR", "Цвет", colors_combined),
+        ("GLAZING", "Заполнение", glazing_val),
+        ("SIZE", "Габарит", size_combined),
+        ("GRID", "Сетка", grid_combined),
     ]
 
     # Имя блока: WW_<window_name>_<cols>x<rows>_001 (латинская x)
@@ -727,33 +835,14 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
                 for p1, p2 in sash["contour"]:
                     blk.add_line(p1, p2, dxfattribs={"layer": layer_name})
 
-    # 9b. Доработка: количество "1 шт." — отдельный TEXT рядом с окном (в атрибутах ОК-1 указывается окно, количество — отдельным текстом)
-    # В ТЗ 0.2 8 атрибутов, но по замечанию нужен "1 шт." — добавляем как TEXT (не ATTDEF) на слое Окна
-    try:
-        meta_qty = model.get("params", {}).get("metadata", {}).get("quantity") or model.get("params", {}).get("quantity") or "1 шт."
-        qty_x = float(model["opening"]["width"]) / 2.0
-        qty_y = -50.0  # ниже проёма y=0
-        qty_text = blk.add_text(
-            str(meta_qty),
-            height=20.0,
-            dxfattribs={"layer": layer_name, "style": style_name},
-        )
-        # Установка позиции с центровкой
-        try:
-            qty_text.set_pos((qty_x, qty_y), align="MIDDLE_CENTER")
-        except Exception:
-            try:
-                qty_text.dxf.insert = (qty_x, qty_y, 0.0)
-                qty_text.dxf.halign = 4  # Middle
-                qty_text.dxf.valign = 0
-            except Exception:
-                qty_text.dxf.insert = (qty_x, qty_y, 0.0)
-    except Exception:
-        pass
+    # 9b. Количество теперь в атрибуте WINDOW (ОК-1/1 шт.), отдельный TEXT не нужен
+    # Оставлено для совместимости: если понадобится отдельный текст — раскомментировать
+    pass
 
-    # 10. Добавление 8 ATTDEF в блок по доработке ТЗ 0.2
+    # 10. Добавление 6 ATTDEF в блок (слитые строки, доработка ТЗ 0.2)
     # Доработка: сместить левее (X=-200) и крупнее (высота 22), шаг 35, чтобы не наезжали на окно
     # Ранее было X=-80, высота 18, шаг 30 — текст мог наезжать на окно при ширине проёма
+    # Атрибуты: OBJECT / WINDOW(ОК-1/1 шт.) / COLOR(RAL8017/RAL9016) / GLAZING(Заполнение СПД42) / SIZE(1500х1500) / GRID(3х2)
     oh = model["opening"]["height"]
     x_attr = -200.0  # левее, гарантированно левее окна (окно с 0, текст шириной ~185 при 22мм -> до -15, не наезжает)
     y_start = float(oh)  # ТЗ: Y = OH (1500.0)
@@ -981,6 +1070,22 @@ def main(argv: list[str] | None = None) -> int:
 
     # Опциональная конвертация в DWG
     convert_to_dwg(out_dxf_path)
+
+    # Дополнительно: вид изнутри для отработки ошибок (если основной OUTSIDE)
+    try:
+        current_view = str(params.get("view", "OUTSIDE")).upper()
+        if current_view == "OUTSIDE":
+            inside_params = copy.deepcopy(params)
+            inside_params["view"] = "INSIDE"
+            inside_model = build_window_model(inside_params)
+            # Имя файла с суффиксом _INSIDE (для отработки)
+            inside_path = out_dxf_path.parent / f"{inside_model['window_name']}_INSIDE.dxf"
+            export_to_dxf(inside_model, inside_path)
+            isize = inside_path.stat().st_size / 1024.0
+            print(f"  Вид изнутри (для отработки): ./{inside_path.as_posix()} ({isize:.1f} KB)")
+            convert_to_dwg(inside_path)
+    except Exception as e:
+        print(f"  Не удалось сформировать вид изнутри: {e}")
 
     return 0
 
