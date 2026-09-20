@@ -20,6 +20,187 @@ from typing import Any
 
 import ezdxf
 
+# --- Шаблонные слои/стили: копирование из пользовательского DXF/DWG ---
+def _copy_template_tables(doc, template_path: str | Path):
+    """Копирует слои, типы линий, текстовые и размерные стили, а также заголовок из шаблона.
+    Если шаблон — DXF/DWG, читает его через ezdxf и переносит таблицы в doc.
+    Возвращает словарь с исходными параметрами для отладки.
+    """
+    tpl_path = Path(template_path)
+    if not tpl_path.is_file():
+        print(f"  Шаблон не найден: {tpl_path} — используем встроенные стили")
+        return {}
+    try:
+        tpl = ezdxf.readfile(str(tpl_path))
+    except Exception as e:
+        print(f"  Не удалось прочитать шаблон {tpl_path}: {e} — используем встроенные")
+        return {}
+    info = {"layers": [], "styles": [], "dimstyles": [], "header": {}}
+    # Копируем типы линий, которые встречаются в слоях шаблона
+    for lt in tpl.linetypes:
+        if lt.dxf.name not in doc.linetypes:
+            try:
+                # ezdxf не имеет прямого копирования, создаём по имени
+                # Попробуем взять из шаблона pattern если есть
+                doc.linetypes.add(lt.dxf.name, pattern=lt.pattern, description=lt.dxf.description)
+            except Exception:
+                try:
+                    doc.linetypes.new(lt.dxf.name)
+                except Exception:
+                    pass
+    # Слои
+    for layer in tpl.layers:
+        name = layer.dxf.name
+        info["layers"].append((name, layer.color, layer.dxf.linetype, layer.dxf.lineweight))
+        if name not in doc.layers:
+            try:
+                doc.layers.add(name, color=layer.color, linetype=layer.dxf.linetype, lineweight=layer.dxf.lineweight)
+            except Exception:
+                try:
+                    doc.layers.add(name, color=layer.color)
+                    # попробовать установить тип линии отдельно
+                    try:
+                        doc.layers.get(name).dxf.linetype = layer.dxf.linetype
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+        else:
+            # Обновляем существующий слой параметрами из шаблона (цвет, тип линии)
+            try:
+                dst = doc.layers.get(name)
+                dst.color = layer.color
+                try:
+                    dst.dxf.linetype = layer.dxf.linetype
+                except Exception:
+                    pass
+                try:
+                    dst.dxf.lineweight = layer.dxf.lineweight
+                except Exception:
+                    pass
+            except Exception:
+                pass
+    # Текстовые стили
+    for s in tpl.styles:
+        name = s.dxf.name
+        info["styles"].append((name, s.dxf.font, s.dxf.width, getattr(s.dxf, "oblique", 0), getattr(s.dxf, "is_vertical", 0)))
+        if name not in doc.styles:
+            try:
+                doc.styles.new(name, dxfattribs={"font": s.dxf.font})
+                # ширина/наклон
+                try:
+                    ns = doc.styles.get(name)
+                    ns.dxf.width = s.dxf.width
+                    for attr in ("oblique", "is_vertical", "is_backward", "is_upside_down", "last_height"):
+                        if hasattr(s.dxf, attr):
+                            try:
+                                setattr(ns.dxf, attr, getattr(s.dxf, attr))
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        else:
+            # обновляем шрифт если отличается
+            try:
+                dst = doc.styles.get(name)
+                dst.dxf.font = s.dxf.font
+            except Exception:
+                pass
+    # Размерные стили
+    for ds in tpl.dimstyles:
+        name = ds.dxf.name
+        info["dimstyles"].append(name)
+        if name not in doc.dimstyles:
+            try:
+                nds = doc.dimstyles.new(name)
+                # копируем все доступные атрибуты dim*
+                for attr in dir(ds.dxf):
+                    if attr.startswith("dim"):
+                        try:
+                            setattr(nds.dxf, attr, getattr(ds.dxf, attr))
+                        except Exception:
+                            pass
+                # также dimtxsty
+                try:
+                    nds.dxf.dimtxsty = ds.dxf.dimtxsty
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        else:
+            # обновляем существующий? не трогаем, чтобы не ломать наши размеры, но можно скопировать если шаблон приоритет
+            pass
+    # Заголовок — копируем ключевые переменные, если они заданы в шаблоне и отличны от дефолта
+    header_keys = ["$LTSCALE", "$CELTSCALE", "$LTSORT", "$LWDEFAULT", "$INSUNITS", "$MEASUREMENT", "$DIMSTYLE", "$TEXTSTYLE", "$CLAYER", "$CELTYPE", "$CELTSCALE", "$CECOLOR", "$DIMASZ", "$DIMTXT", "$DIMSCALE", "$DIMGAP", "$DIMEXE", "$DIMEXO"]
+    for key in header_keys:
+        try:
+            if key in tpl.header:
+                val = tpl.header.get(key)
+                # не перезаписываем DWGCODEPAGE/ACADVER
+                if key not in ("$ACADVER", "$DWGCODEPAGE", "$HANDSEED"):
+                    try:
+                        doc.header[key] = val
+                        info["header"][key] = val
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    # Также копируем $LTSCALE отдельно если есть
+    try:
+        if "$LTSCALE" in tpl.header:
+            info["header"]["$LTSCALE"] = tpl.header["$LTSCALE"]
+    except Exception:
+        pass
+    print(f"  Шаблон {tpl_path.name}: скопировано слоёв {len(info['layers'])}, стилей {len(info['styles'])}, размерных {len(info['dimstyles'])}")
+    if info["layers"]:
+        print(f"    Слои: " + ", ".join([f"{n}({c}/{lt})" for n,c,lt,_ in info["layers"][:8]]) + (" ..." if len(info["layers"])>8 else ""))
+    if info["styles"]:
+        print(f"    Стили: " + ", ".join([f"{n}:{f}" for n,f,_,_,_ in info["styles"][:6]]) + (" ..." if len(info["styles"])>6 else ""))
+    if info["dimstyles"]:
+        print(f"    Размерные: " + ", ".join(info["dimstyles"][:6]) + (" ..." if len(info["dimstyles"])>6 else ""))
+    return info
+
+def inspect_template(template_path: str | Path):
+    """Читает шаблон и выводит подробные параметры слоёв/стилей для сверки (для пользователя)."""
+    tpl_path = Path(template_path)
+    if not tpl_path.is_file():
+        print(f"Файл шаблона не найден: {tpl_path}")
+        return
+    try:
+        tpl = ezdxf.readfile(str(tpl_path))
+    except Exception as e:
+        print(f"Ошибка чтения шаблона: {e}")
+        return
+    print(f"=== Инспекция шаблона {tpl_path} ===")
+    print(f"DXF версия: {tpl.dxfversion}  Кодовая страница: {tpl.header.get('$DWGCODEPAGE','?')}  LTSCALE: {tpl.header.get('$LTSCALE','?')}")
+    print(f"\nСлои ({len(list(tpl.layers))}):")
+    for l in tpl.layers:
+        print(f"  {l.dxf.name:20} цвет={l.color:3} тип линии={l.dxf.linetype:12} вес={l.dxf.lineweight}  {'(выкл)' if l.is_off() else ''} {'(заморожен)' if l.is_frozen() else ''}")
+    print(f"\nТекстовые стили ({len(list(tpl.styles))}):")
+    for s in tpl.styles:
+        print(f"  {s.dxf.name:20} шрифт={s.dxf.font:20} width={s.dxf.width} last_height={getattr(s.dxf, 'last_height', '?')} flags={getattr(s.dxf, 'flags', '?')}")
+    print(f"\nРазмерные стили ({len(list(tpl.dimstyles))}):")
+    for ds in tpl.dimstyles:
+        # выводим ключевые параметры
+        vals = []
+        for k in ("dimtxt","dimasz","dimexe","dimexo","dimgap","dimscale","dimtxsty","dimclrt","dimclre","dimclrd"):
+            try:
+                vals.append(f"{k}={getattr(ds.dxf, k)}")
+            except Exception:
+                pass
+        print(f"  {ds.dxf.name:20} " + " ".join(vals))
+    print(f"\nЗаголовок (ключевые):")
+    for k in ["$LTSCALE","$CELTSCALE","$INSUNITS","$MEASUREMENT","$DIMSTYLE","$TEXTSTYLE","$CLAYER"]:
+        try:
+            if k in tpl.header:
+                print(f"  {k} = {tpl.header.get(k)}")
+        except Exception:
+            pass
+    print("=== Конец инспекции ===")
+
+
 
 def load_params(path: str | Path) -> dict[str, Any]:
     """
@@ -789,7 +970,7 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
+def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path: str | Path | None = None) -> None:
     """
     Экспорт геометрической модели окна в файл DXF версии R2013.
 
@@ -800,15 +981,61 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
     # 1. Создание документа DXF версии R2013 (AutoCAD 2013+)
-    doc = ezdxf.new("R2013")
-    doc.encoding = "cp1251"
-    doc.header["$DWGCODEPAGE"] = "ANSI_1251"
-    # Масштаб линий для штриховых — 25 (LTSCALE)
-    try:
-        doc.header["$LTSCALE"] = 25.0
-        doc.header["$CELTSCALE"] = 1.0
-    except Exception:
-        pass
+    # Если указан шаблон — берём его таблицы/заголовок, иначе создаём с нуля
+    # Приоритет: явный template_path > params['template'] > автопоиск template.dxf рядом с params/output
+    tpl_candidate = template_path
+    if tpl_candidate is None:
+        tpl_candidate = model.get("params", {}).get("template") or model.get("params", {}).get("template_path")
+    if tpl_candidate is None:
+        # автопоиск: template.dxf / шаблон.dxf рядом с output или рядом с window_export.py
+        for cand in [Path("template.dxf"), Path("шаблон.dxf"), Path(__file__).parent / "template.dxf", Path(__file__).parent / "шаблон.dxf", out_file.parent / "template.dxf"]:
+            if cand.is_file():
+                tpl_candidate = cand
+                break
+    if tpl_candidate and Path(tpl_candidate).is_file():
+        print(f"  Используем шаблон: {tpl_candidate}")
+        # Читаем шаблон как основу (сохраняет его LTSCALE, слои, стили и т.п.), но очищаем модель
+        try:
+            tpl_doc = ezdxf.readfile(str(tpl_candidate))
+            # Пробуем использовать шаблон как основу: копируем заголовок и таблицы через новый документ?
+            # Проще: создаём новый doc, затем копируем таблицы из шаблона
+            doc = ezdxf.new("R2013")
+            doc.encoding = "cp1251"
+            # Скопировать заголовок/таблицы из шаблона
+            _copy_template_tables(doc, tpl_candidate)
+            # Обеспечить что DWGCODEPAGE/encoding остаются cp1251 для кириллицы (перекрывает шаблон если нужно)
+            try:
+                doc.header["$DWGCODEPAGE"] = "ANSI_1251"
+                doc.encoding = "cp1251"
+            except Exception:
+                pass
+            # Если в шаблоне свой LTSCALE, он уже скопирован; если нет — ставим 25
+            try:
+                if "$LTSCALE" not in tpl_doc.header or tpl_doc.header.get("$LTSCALE", 0) == 1.0:
+                    doc.header["$LTSCALE"] = 25.0
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"  Не удалось использовать шаблон как основу: {e} — создаём с нуля")
+            doc = ezdxf.new("R2013")
+            doc.encoding = "cp1251"
+            doc.header["$DWGCODEPAGE"] = "ANSI_1251"
+            try:
+                doc.header["$LTSCALE"] = 25.0
+                doc.header["$CELTSCALE"] = 1.0
+            except Exception:
+                pass
+            _copy_template_tables(doc, tpl_candidate)
+    else:
+        doc = ezdxf.new("R2013")
+        doc.encoding = "cp1251"
+        doc.header["$DWGCODEPAGE"] = "ANSI_1251"
+        # Масштаб линий для штриховых — 25 (LTSCALE)
+        try:
+            doc.header["$LTSCALE"] = 25.0
+            doc.header["$CELTSCALE"] = 1.0
+        except Exception:
+            pass
 
     # 2. Создание слоёв 'Окна' и 'Штриховые' (для контура проёма)
     layer_name = "Окна"
@@ -1019,7 +1246,8 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
             doc.layers.add("Основной", color=7)
         except Exception:
             pass
-    # Создаём текстовый стиль Основной стиль (Arial) если нет
+    # Создаём текстовый стиль Основной стиль (Arial) если нет — но если шаблон уже дал его, оставляем шаблонный
+    use_tpl = tpl_candidate is not None and Path(tpl_candidate).is_file()
     if text_style_name not in doc.styles:
         try:
             doc.styles.new(text_style_name, dxfattribs={"font": "Arial.ttf"})
@@ -1029,42 +1257,62 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
             except Exception:
                 pass
     else:
-        try:
-            st = doc.styles.get(text_style_name)
-            if st.dxf.font != "Arial.ttf":
-                st.dxf.font = "Arial.ttf"
-        except Exception:
-            pass
-    # Создаём размерный стиль Основной стиль и увеличиваем габариты (масштаб 4)
+        if not use_tpl:
+            try:
+                st = doc.styles.get(text_style_name)
+                if st.dxf.font != "Arial.ttf":
+                    st.dxf.font = "Arial.ttf"
+            except Exception:
+                pass
+        # если шаблон — оставляем его шрифт как есть
+    # Создаём размерный стиль Основной стиль — если шаблон уже есть, не перезаписываем его параметры
     if dim_style_name not in doc.dimstyles:
         try:
-            try:
-                base = doc.dimstyles.get("EZDXF")
-                ds_new = doc.dimstyles.new(dim_style_name)
-                for attr in ("dimtxt", "dimasz", "dimexe", "dimexo", "dimgap", "dimscale"):
-                    try:
-                        setattr(ds_new.dxf, attr, getattr(base.dxf, attr))
-                    except Exception:
-                        pass
-            except Exception:
-                doc.dimstyles.new(dim_style_name)
+            # если шаблон дал свой стиль, он уже скопирован; иначе создаём
+            if use_tpl and "Основной стиль" in [ds.dxf.name for ds in doc.dimstyles]:
+                pass
+            else:
+                try:
+                    base = doc.dimstyles.get("EZDXF")
+                    ds_new = doc.dimstyles.new(dim_style_name)
+                    for attr in ("dimtxt", "dimasz", "dimexe", "dimexo", "dimgap", "dimscale"):
+                        try:
+                            setattr(ds_new.dxf, attr, getattr(base.dxf, attr))
+                        except Exception:
+                            pass
+                except Exception:
+                    doc.dimstyles.new(dim_style_name)
         except Exception:
             pass
-    try:
-        ds = doc.dimstyles.get(dim_style_name)
-        ds.dxf.dimtxt = 8.0  # высота текста размера (было 2.5, стало 8)
-        ds.dxf.dimasz = 6.0  # размер стрелок
-        ds.dxf.dimexe = 3.0
-        ds.dxf.dimexo = 2.5
-        ds.dxf.dimgap = 3.0
-        ds.dxf.dimscale = 4.0  # масштаб 4 как требуется
-        ds.dxf.dimexe = 3.0
+    # Устанавливаем габариты только если не используем шаблон (чтобы не перетирать пользовательские)
+    if not use_tpl:
         try:
-            ds.dxf.dimtxsty = text_style_name
+            ds = doc.dimstyles.get(dim_style_name)
+            ds.dxf.dimtxt = 8.0  # высота текста размера (было 2.5, стало 8)
+            ds.dxf.dimasz = 6.0  # размер стрелок
+            ds.dxf.dimexe = 3.0
+            ds.dxf.dimexo = 2.5
+            ds.dxf.dimgap = 3.0
+            ds.dxf.dimscale = 4.0  # масштаб 4 как требуется
+            ds.dxf.dimexe = 3.0
+            try:
+                ds.dxf.dimtxsty = text_style_name
+            except Exception:
+                pass
         except Exception:
             pass
-    except Exception:
-        pass
+    else:
+        # при шаблоне — убеждаемся что dimtxsty указывает на текстовый стиль из шаблона, но не меняем размеры
+        try:
+            ds = doc.dimstyles.get(dim_style_name)
+            # не трогаем dimtxt/dimasz/dimscale, оставляем шаблонные
+            if not hasattr(ds.dxf, "dimtxsty") or not ds.dxf.dimtxsty:
+                try:
+                    ds.dxf.dimtxsty = text_style_name
+                except Exception:
+                    pass
+        except Exception:
+            pass
     # Для совместимости также оставляем WindowStyle
     if "WindowStyle" not in doc.styles:
         try:
@@ -1072,12 +1320,16 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
         except Exception:
             pass
     # Атрибуты — выше окна, по левому углу (x=0), слой Текст, стиль Основной стиль, увеличенный размер
+    # Порядок сверху вниз: Объект, Окно, Цвет, Заполнение, Габарит, Сетка (как было до перестановки)
+    # Чтобы Объект был самым верхним, инвертируем Y: первый в списке (OBJECT) — самый высокий
     x_attr = 0.0  # левый угол проёма
-    y_attr_start = float(oh) + 60.0  # отодвинуто от контура проёма (было 50, стало 60)
-    step = 40.0  # увеличенный шаг (было 35)
+    y_attr_start = float(oh) + 60.0  # нижний уровень (ближайший к окну) — для Сетка
+    step = 45.0  # увеличенный шаг (было 40, стало 45 по просьбе)
     height_attr = 30.0  # увеличенный размер текста атрибутов (было 22)
+    n_attrs = len(model["attdefs"])
     for idx, (tag, prompt, value) in enumerate(model["attdefs"]):
-        y = y_attr_start + idx * step
+        # idx 0 = OBJECT -> самый верхний (y_start + (n-1)*step), idx 5 = GRID -> самый нижний (y_start)
+        y = y_attr_start + (n_attrs - 1 - idx) * step
         blk.add_attdef(
             tag=tag,
             insert=(x_attr, y),
@@ -1341,6 +1593,17 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Путь к результирующему DXF-файлу (по умолчанию: output/<window_name>.dxf)",
     )
+    parser.add_argument(
+        "--template",
+        "-t",
+        default=None,
+        help="Путь к DXF/DWG-шаблону с вашими слоями/стилями (если не указан — берётся template.dxf/шаблон.dxf или params['template'])",
+    )
+    parser.add_argument(
+        "--inspect-template",
+        default=None,
+        help="Показать параметры шаблона (слои/стили) и выйти, не генерируя окно",
+    )
     args = parser.parse_args(argv)
 
     # 1. Поиск и загрузка params.json
@@ -1401,14 +1664,23 @@ def main(argv: list[str] | None = None) -> int:
     print("[5/6] Создание блока... OK")
     print(f"      Имя блока:  {model['block_name']}")
 
+    # 0. Инспекция шаблона (по запросу)
+    if args.inspect_template:
+        inspect_template(args.inspect_template)
+        return 0
+    # Также поддержка --template без генерации? нет
+
     # 6. Экспорт в DXF
     if args.output:
         out_dxf_path = Path(args.output)
     else:
         out_dxf_path = Path("output") / f"{model['window_name']}.dxf"
 
+    # Определяем путь к шаблону: CLI > params.json > автопоиск
+    tpl_path = args.template or params.get("template") or params.get("template_path")
+
     try:
-        export_to_dxf(model, out_dxf_path)
+        export_to_dxf(model, out_dxf_path, template_path=tpl_path)
         size_bytes = out_dxf_path.stat().st_size
         size_kb = size_bytes / 1024.0
 
@@ -1438,7 +1710,7 @@ def main(argv: list[str] | None = None) -> int:
             inside_params["view"] = "INSIDE"
             inside_model = build_window_model(inside_params)
             inside_path = out_dxf_path.parent / f"{inside_model['window_name']}_INSIDE.dxf"
-            export_to_dxf(inside_model, inside_path)
+            export_to_dxf(inside_model, inside_path, template_path=tpl_path)
             isize = inside_path.stat().st_size / 1024.0
             print(f"  Вид изнутри (для отработки): ./{inside_path.as_posix()} ({isize:.1f} KB)")
             dwg_inside = convert_to_dwg(inside_path)

@@ -172,7 +172,7 @@ class TestWindowExport(unittest.TestCase):
             self.assertEqual(attrib_map.get(tag), exp_val)
 
     def test_07_attributes_style(self):
-        """Сценарий 7: Стиль атрибутов Основной стиль Arial.ttf высота 30 шаг 40 выше окна слева (X=0, Y=OH+60), слой Текст"""
+        """Сценарий 7: Стиль атрибутов Основной стиль Arial.ttf высота 30 шаг 45 выше окна слева (X=0, Y=OH+60), слой Текст, порядок сверху Объект->Сетка"""
         doc = ezdxf.readfile("output/ОК-1.dxf")
         model_tmp = build_window_model(self.params)
         block_name = model_tmp["block_name"]
@@ -188,16 +188,27 @@ class TestWindowExport(unittest.TestCase):
             self.assertEqual(att.dxf.style, "Основной стиль", f"Стиль атрибута {att.dxf.tag} должен быть Основной стиль")
             self.assertEqual(att.dxf.layer, "Текст")
             self.assertNotIn("?", att.dxf.text)
-        # Проверка координат первой и шага: X=0, Y=OH+60, шаг 40
+        # Проверка порядка сверху вниз: Объект самый верхний, Сетка самая нижняя (как было)
         oh = self.params["opening"]["height"]
+        # Ожидаемый порядок сверху вниз
+        expected_order = ["OBJECT", "WINDOW", "COLOR", "GLAZING", "SIZE", "GRID"]
+        actual_order = [a.dxf.tag for a in attdefs]  # уже отсортировано сверху вниз
+        self.assertEqual(actual_order, expected_order, f"Порядок атрибутов сверху вниз должен быть {expected_order}, получили {actual_order}")
+        # Проверка координат: самый верхний OBJECT на OH+60+5*45, самый нижний GRID на OH+60, шаг 45
+        step = 45.0
+        n = len(attdefs)
+        y_bottom = float(oh) + 60.0  # GRID
+        y_top = y_bottom + (n-1)*step  # OBJECT
         first = [a for a in attdefs if a.dxf.tag == "OBJECT"][0]
+        last = [a for a in attdefs if a.dxf.tag == "GRID"][0]
         self.assertAlmostEqual(first.dxf.insert.x, 0.0, delta=1e-6, msg="X OBJECT должен быть 0 (левый угол)")
-        self.assertAlmostEqual(first.dxf.insert.y, float(oh) + 60.0, delta=1e-6, msg="Y OBJECT должен быть OH+60 (выше окна, отодвинуто)")
-        # Проверка шага 40 между соседними
+        self.assertAlmostEqual(first.dxf.insert.y, y_top, delta=1e-6, msg=f"Y OBJECT (верхний) должен быть OH+60+{(n-1)}*45 = {y_top}")
+        self.assertAlmostEqual(last.dxf.insert.y, y_bottom, delta=1e-6, msg=f"Y GRID (нижний) должен быть OH+60 = {y_bottom}")
+        # Проверка шага 45 между соседними сверху вниз
         sorted_by_y = sorted(attdefs, key=lambda e: e.dxf.insert.y, reverse=True)
         for i in range(len(sorted_by_y)-1):
             dy = sorted_by_y[i].dxf.insert.y - sorted_by_y[i+1].dxf.insert.y
-            self.assertAlmostEqual(dy, 40.0, delta=1e-6, msg=f"Шаг между {sorted_by_y[i].dxf.tag} и {sorted_by_y[i+1].dxf.tag} должен быть 40")
+            self.assertAlmostEqual(dy, 45.0, delta=1e-6, msg=f"Шаг между {sorted_by_y[i].dxf.tag} и {sorted_by_y[i+1].dxf.tag} должен быть 45")
         for att in attdefs:
             self.assertAlmostEqual(att.dxf.insert.x, 0.0, delta=1e-6, msg=f"Атрибут {att.dxf.tag} должен быть на X=0 левый угол")
             self.assertGreater(att.dxf.insert.y, float(oh), msg=f"Атрибут {att.dxf.tag} должен быть выше окна (Y>OH)")
