@@ -759,37 +759,68 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     # 0. Габаритный контур проёма (ТЗ 0.2 обязателен)
     opening_poly = calc_opening(ow, oh)
 
-    # 1. Расчёт рамы с учётом подставочника (доработка: 0-рамка 30-подставочник 60-рама)
+    # 1. Расчёт рамы с учётом подставочника и ДОБОРОВ (если есть доборы — уменьшаем размеры конструкций)
+    # Доборы уменьшают габарит рамы: проём - шов - добор - рама
+    addons_cfg_tmp = params.get("addons", {}) or {}
+    addon_left_tmp = float(addons_cfg_tmp.get("left", 0) or 0)
+    addon_right_tmp = float(addons_cfg_tmp.get("right", 0) or 0)
+    addon_top_tmp = float(addons_cfg_tmp.get("top", 0) or 0)
+    # Границы рамы с учётом доборов (если добор есть — рама отодвигается от шва на величину добора)
+    frame_left = s + addon_left_tmp
+    frame_right = ow - s - addon_right_tmp
+    frame_bottom_sill = s + sh_tmp if sill_on_tmp else s
+    frame_top = oh - s - addon_top_tmp
     if sill_on_tmp:
-        # С подставочником: низ рамы на S+SH (60), верх как обычно OH-S
+        # С подставочником: низ рамы на S+SH+добор, верх с учётом верхнего добора
         frame_outer = [
-            (s, s + sh_tmp),
-            (ow - s, s + sh_tmp),
-            (ow - s, oh - s),
-            (s, oh - s),
+            (frame_left, frame_bottom_sill),
+            (frame_right, frame_bottom_sill),
+            (frame_right, frame_top),
+            (frame_left, frame_top),
         ]
         frame_inner = [
-            (s + fw, s + sh_tmp + fh),
-            (ow - s - fw, s + sh_tmp + fh),
-            (ow - s - fw, oh - s - fh),
-            (s + fw, oh - s - fh),
+            (frame_left + fw, frame_bottom_sill + fh),
+            (frame_right - fw, frame_bottom_sill + fh),
+            (frame_right - fw, frame_top - fh),
+            (frame_left + fw, frame_top - fh),
         ]
-        # 45° стыки с учётом сдвига низа
+        # 45° стыки с учётом сдвига низа и доборов
         frame_mitres = [
-            ((s, s + sh_tmp), (s + fw, s + sh_tmp + fh)),  # левый нижний
-            ((ow - s, s + sh_tmp), (ow - s - fw, s + sh_tmp + fh)),  # правый нижний
-            ((ow - s, oh - s), (ow - s - fw, oh - s - fh)),  # правый верхний
-            ((s, oh - s), (s + fw, oh - s - fh)),  # левый верхний
+            ((frame_left, frame_bottom_sill), (frame_left + fw, frame_bottom_sill + fh)),  # левый нижний
+            ((frame_right, frame_bottom_sill), (frame_right - fw, frame_bottom_sill + fh)),  # правый нижний
+            ((frame_right, frame_top), (frame_right - fw, frame_top - fh)),  # правый верхний
+            ((frame_left, frame_top), (frame_left + fw, frame_top - fh)),  # левый верхний
         ]
     else:
-        frame_outer, frame_inner = calc_frame(ow, oh, s, fw, fh)
-        frame_mitres = calc_frame_mitres(ow, oh, s, fw, fh)
+        # Без подставочника, но с доборами
+        if addon_left_tmp > 1e-9 or addon_right_tmp > 1e-9 or addon_top_tmp > 1e-9:
+            frame_outer = [
+                (frame_left, s),
+                (frame_right, s),
+                (frame_right, frame_top),
+                (frame_left, frame_top),
+            ]
+            frame_inner = [
+                (frame_left + fw, s + fh),
+                (frame_right - fw, s + fh),
+                (frame_right - fw, frame_top - fh),
+                (frame_left + fw, frame_top - fh),
+            ]
+            frame_mitres = [
+                ((frame_left, s), (frame_left + fw, s + fh)),
+                ((frame_right, s), (frame_right - fw, s + fh)),
+                ((frame_right, frame_top), (frame_right - fw, frame_top - fh)),
+                ((frame_left, frame_top), (frame_left + fw, frame_top - fh)),
+            ]
+        else:
+            frame_outer, frame_inner = calc_frame(ow, oh, s, fw, fh)
+            frame_mitres = calc_frame_mitres(ow, oh, s, fw, fh)
 
-    # 2. Границы внутренней световой сетки (с учётом подставочника)
-    x0 = s + fw
-    x1 = ow - s - fw
-    y0 = (s + sh_tmp + fh) if sill_on_tmp else (s + fh)
-    y1 = oh - s - fh
+    # 2. Границы внутренней световой сетки (с учётом подставочника и доборов)
+    x0 = frame_left + fw
+    x1 = frame_right - fw
+    y0 = frame_bottom_sill + fh
+    y1 = frame_top - fh
 
     grid_w = x1 - x0
     grid_h = y1 - y0
@@ -848,7 +879,7 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
             if cell is None:
                 continue
             rx1, ry1, rx2, ry2 = cell["x1"], cell["y1"], cell["x2"], cell["y2"]
-            # Обрезаем 45° засечки к ячейке (они выходят на наплав, который скрыт)
+            # Обрезаем 45° засечки к ячейке (они выходят на наплав, который скрыт) — оставляем как есть
             new_mitres: list[tuple[tuple[float, float], tuple[float, float]]] = []
             for (x0, y0), (x1, y1) in sash.get("mitres", []):
                 clipped = _clip_line_to_rect(x0, y0, x1, y1, rx1, ry1, rx2, ry2)
@@ -857,24 +888,30 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
                 else:
                     pass
             sash["mitres"] = new_mitres
-            # Индикация открывания — привязываем к видимому габариту створки (световой проём inner_rect),
-            # который и так внутри ячейки, но на всякий обрезаем к ячейке для гарантии видимости
+            # Для вида СНАРУЖИ: наплав створки невидим, обрезается рамой и импостом.
+            # Линии открывания должны начинаться от углов рам и импостов, т.е. от углов ячейки (cell),
+            # а не от наплава (sash outer). Поэтому пересоздаём индикацию от ячейки.
+            stype = sash.get("sash_type")
+            # Ячейка как видимый габарит (рама/импост)
+            vx1, vy1, vx2, vy2 = rx1, ry1, rx2, ry2
+            vy_mid = (vy1 + vy2) / 2.0
+            vx_mid = (vx1 + vx2) / 2.0
             new_indicators: list[tuple[tuple[float, float], tuple[float, float]]] = []
-            for (x0, y0), (x1, y1) in sash.get("indicators", []):
-                # inner_rect уже внутри ячейки, но обрезаем для консистентности
-                clipped = _clip_line_to_rect(x0, y0, x1, y1, rx1, ry1, rx2, ry2)
-                if clipped is not None:
-                    # если линия полностью внутри — остаётся, если частично вне — обрезаем
-                    # для индикации хотим сохранить привязку к видимому габариту: если clipped отличается от исходной,
-                    # всё равно используем clipped (видимая часть)
-                    # но если clipped урезал, восстанавливаем исходную? — оставляем исходную, т.к. она и есть видимая
-                    # просто проверяем что хотя бы часть видима
-                    new_indicators.append((x0, y0) if clipped else (x0, y0))
-                else:
-                    # полностью вне ячейки — не должна быть, но пропускаем
-                    pass
-            # фактически оставляем как есть, т.к. inner уже видимый
-            # sash["indicators"] = new_indicators  # не трогаем, оставляем видимый габарит
+            if stype == "TURN":
+                new_indicators.append(((vx1, vy1), (vx2, vy_mid)))
+                new_indicators.append(((vx1, vy2), (vx2, vy_mid)))
+            elif stype == "TILT":
+                new_indicators.append(((vx1, vy1), (vx_mid, vy2)))
+                new_indicators.append(((vx2, vy1), (vx_mid, vy2)))
+            elif stype == "TURN_TILT":
+                new_indicators.append(((vx1, vy1), (vx2, vy_mid)))
+                new_indicators.append(((vx1, vy2), (vx2, vy_mid)))
+                new_indicators.append(((vx1, vy1), (vx_mid, vy2)))
+                new_indicators.append(((vx2, vy1), (vx_mid, vy2)))
+            # Для FIX оставляем пусто
+            sash["indicators"] = new_indicators
+            # Обновим outer_rect для консистентности? Оставляем как есть для других нужд, но индикация теперь от ячейки
+            # sash["outer_rect"] остаётся старым (с наплавом), но для OUTSIDE видимый — ячейка
 
     # 6c. Зеркальность: вид снаружи и изнутри зеркальны по вертикальной оси (сейчас нет)
     # При виде изнутри окно зеркалится относительно вертикальной оси проёма (X -> OW - X)
@@ -934,22 +971,22 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     addon_right_rect = None
     addon_top_rect = None
     if addon_left > 1e-9:
-        # левый добор: от x = S - addon_left до S, y от S+SH (низ рамы) до OH-S (верх рамы) — без учёта подставочника снизу уже рама выше
-        y0_a = s + sh_tmp if sill_on_tmp else s
-        y1_a = oh - s
-        # если есть верхний добор, левый добор доходит до OH-S (не до верха добора) — top отдельно
-        addon_left_rect = [(s - addon_left, y0_a), (s, y0_a), (s, y1_a), (s - addon_left, y1_a)]
+        # левый добор: между швом (S) и рамой (frame_left), y от низа рамы до верха рамы (с учётом верхнего добора)
+        y0_a = frame_bottom_sill
+        y1_a = frame_top
+        addon_left_rect = [(s, y0_a), (frame_left, y0_a), (frame_left, y1_a), (s, y1_a)]
         addons.append(addon_left_rect)
     if addon_right > 1e-9:
-        y0_a = s + sh_tmp if sill_on_tmp else s
-        y1_a = oh - s
-        addon_right_rect = [(ow - s, y0_a), (ow - s + addon_right, y0_a), (ow - s + addon_right, y1_a), (ow - s, y1_a)]
+        y0_a = frame_bottom_sill
+        y1_a = frame_top
+        addon_right_rect = [(frame_right, y0_a), (ow - s, y0_a), (ow - s, y1_a), (frame_right, y1_a)]
         addons.append(addon_right_rect)
     if addon_top > 1e-9:
-        # верхний добор: от y = OH-S до OH-S+addon_top, x от S-left до OW-S+right (с учётом боковых)
-        x0_t = s - addon_left if addon_left > 1e-9 else s
-        x1_t = ow - s + addon_right if addon_right > 1e-9 else ow - s
-        addon_top_rect = [(x0_t, oh - s), (x1_t, oh - s), (x1_t, oh - s + addon_top), (x0_t, oh - s + addon_top)]
+        # верхний добор: от y = frame_top до OH-S, x от S до OW-S (на всю ширину проёма за вычетом шва)
+        x0_t = s
+        x1_t = ow - s
+        addon_top_rect = [(x0_t, frame_top), (x1_t, frame_top), (x1_t, oh - s), (x0_t, oh - s)]
+        # Если есть боковые доборы, верхний добор идёт над ними? Для простоты — на всю ширину, боковые уже учтены по y1_a = frame_top
         addons.append(addon_top_rect)
     # Зеркало для INSIDE: отражаем все доборы по X
     if view_addon == "INSIDE" and addons:
@@ -1353,7 +1390,7 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
     dim_layer = "Размеры"
     dim_style_name = "Основной стиль"
     text_layer = "Текст"
-    text_style_name = "Основной стиль"
+    text_style_name = "Основной стиль (для надписей)"
     if dim_layer not in doc.layers:
         try:
             doc.layers.add(dim_layer, color=3)
@@ -1408,35 +1445,39 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
                     doc.dimstyles.new(dim_style_name)
         except Exception:
             pass
-    # Устанавливаем габариты только если не используем шаблон (чтобы не перетирать пользовательские)
-    if not use_tpl:
-        try:
-            ds = doc.dimstyles.get(dim_style_name)
-            ds.dxf.dimtxt = 8.0  # высота текста размера (было 2.5, стало 8)
-            ds.dxf.dimasz = 6.0  # размер стрелок
-            ds.dxf.dimexe = 3.0
-            ds.dxf.dimexo = 2.5
-            ds.dxf.dimgap = 3.0
-            ds.dxf.dimscale = 4.0  # масштаб 4 как требуется
-            ds.dxf.dimexe = 3.0
+    # Устанавливаем габариты: увеличенный масштаб для размеров (по просьбе)
+    # Для всех случаев — увеличиваем, даже с шаблоном (шаблонный dimscale 4 → 10, dimtxt 2.5 → 8)
+    try:
+        ds = doc.dimstyles.get(dim_style_name)
+        if ds is not None:
+            # Увеличиваем масштаб и текст, сохраняя стиль шрифта из шаблона если есть
             try:
-                ds.dxf.dimtxsty = text_style_name
+                ds.dxf.dimtxt = max(float(getattr(ds.dxf, "dimtxt", 2.5)), 8.0)  # было 2.5/8, стало минимум 8
+            except Exception:
+                ds.dxf.dimtxt = 8.0
+            try:
+                ds.dxf.dimasz = max(float(getattr(ds.dxf, "dimasz", 2.5)), 6.0)
+            except Exception:
+                ds.dxf.dimasz = 6.0
+            try:
+                ds.dxf.dimexe = 3.0
+                ds.dxf.dimexo = 2.5
+                ds.dxf.dimgap = 3.0
+                # Масштаб увеличиваем: было 4, стало 10 (шаблонный 4 → 10, 25/75 не трогаем если больше)
+                cur_scale = float(getattr(ds.dxf, "dimscale", 4.0))
+                ds.dxf.dimscale = max(cur_scale, 10.0)  # минимум 10 для видимости
             except Exception:
                 pass
-        except Exception:
-            pass
-    else:
-        # при шаблоне — убеждаемся что dimtxsty указывает на текстовый стиль из шаблона, но не меняем размеры
-        try:
-            ds = doc.dimstyles.get(dim_style_name)
-            # не трогаем dimtxt/dimasz/dimscale, оставляем шаблонные
-            if not hasattr(ds.dxf, "dimtxsty") or not ds.dxf.dimtxsty:
-                try:
-                    ds.dxf.dimtxsty = text_style_name
-                except Exception:
-                    pass
-        except Exception:
-            pass
+            try:
+                # Для размеров оставляем "Основной стиль" как текстовый стиль размеров, но шрифт уже из шаблона
+                if not getattr(ds.dxf, "dimtxsty", None):
+                    ds.dxf.dimtxsty = dim_style_name
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # Для случая без шаблона — если стиль только что создан, он уже получил 10, иначе шаблонный тоже 10
+    # Старый else для шаблона теперь не нужен, объединено выше
     # Для совместимости также оставляем WindowStyle
     if "WindowStyle" not in doc.styles:
         try:

@@ -97,8 +97,12 @@ class TestWindowExport(unittest.TestCase):
         self.assertIn("Текст", doc.layers, "Слой 'Текст' для атрибутов должен существовать")
         # Основной остаётся для совместимости
         self.assertIn("Основной", doc.layers, "Слой 'Основной' (совместимость) должен существовать")
-        self.assertEqual(doc.layers.get("Окна").color, 7, "Цвет слоя Окна должен быть 7")
+        # Цвет Окна из шаблона 195, без шаблона 7 — допускаем оба
+        self.assertIn(doc.layers.get("Окна").color, (7, 195), "Цвет слоя Окна должен быть 7 (без шаблона) или 195 (из Шаблон.dxf)")
         self.assertIn("Основной стиль", doc.styles, "Стиль 'Основной стиль' должен существовать")
+        # Для атрибутов/площади ожидается специальный стиль из Шаблон.dxf, если шаблон есть
+        if Path("Шаблон.dxf").is_file():
+            self.assertIn("Основной стиль (для надписей)", doc.styles, "Стиль для надписей должен быть из шаблона")
         self.assertIn("Основной стиль", doc.dimstyles, "Размерный стиль 'Основной стиль' должен существовать")
         # Динамическое имя блока нового формата
         model = build_window_model(self.params)
@@ -121,19 +125,19 @@ class TestWindowExport(unittest.TestCase):
             elif entity.dxftype() == "TEXT":
                 # Текст площади на Текст
                 self.assertEqual(entity.dxf.layer, "Текст", f"TEXT должен быть на Текст")
-                self.assertEqual(entity.dxf.style, "Основной стиль", "TEXT стиль должен быть Основной стиль")
+                self.assertIn(entity.dxf.style, ("Основной стиль", "Основной стиль (для надписей)"), "TEXT стиль должен быть Основной стиль или Основной стиль (для надписей)")
             else:
                 # ATTDEF — на Текст, стиль Основной стиль
                 if entity.dxftype() in ("ATTDEF", "MTEXT"):
                     self.assertEqual(entity.dxf.layer, "Текст", f"Элемент блока {entity.dxftype()} должен быть на слое 'Текст'")
-                    self.assertEqual(entity.dxf.style, "Основной стиль", f"Стиль {entity.dxftype()} должен быть Основной стиль")
+                    self.assertIn(entity.dxf.style, ("Основной стиль", "Основной стиль (для надписей)"), f"Стиль {entity.dxftype()} должен быть Основной стиль или для надписей")
         msp = doc.modelspace()
         for entity in msp:
             if entity.dxftype() == "INSERT":
                 self.assertEqual(entity.dxf.layer, "Окна", f"INSERT должен быть на слое 'Окна'")
                 for attr in entity.attribs:
                     self.assertEqual(attr.dxf.layer, "Текст", f"Атрибут {attr.dxf.tag} должен быть на слое 'Текст'")
-                    self.assertEqual(attr.dxf.style, "Основной стиль", f"Атрибут {attr.dxf.tag} стиль должен быть Основной стиль")
+                    self.assertIn(attr.dxf.style, ("Основной стиль", "Основной стиль (для надписей)"), f"Атрибут {attr.dxf.tag} стиль должен быть Основной или для надписей")
             elif entity.dxftype() == "DIMENSION":
                 self.assertIn(entity.dxf.layer, ("Основной", "Размеры", "Окна"), f"DIMENSION в ModelSpace на слое размеров")
 
@@ -179,13 +183,14 @@ class TestWindowExport(unittest.TestCase):
         blk = doc.blocks[block_name]
         # Проверка существования стиля Основной стиль с Arial.ttf (и WindowStyle для совместимости)
         self.assertIn("Основной стиль", doc.styles, "Стиль Основной стиль должен существовать")
-        self.assertEqual(doc.styles.get("Основной стиль").dxf.font, "Arial.ttf", "Шрифт Основной стиль должен быть Arial.ttf")
+        # Шрифт из шаблона romans.shx, без шаблона Arial.ttf — допускаем оба
+        self.assertIn(doc.styles.get("Основной стиль").dxf.font, ("Arial.ttf", "romans.shx", "arial.ttf"), "Шрифт Основной стиль должен быть Arial.ttf или romans.shx из шаблона")
         self.assertIn("WindowStyle", doc.styles, "Стиль WindowStyle должен существовать для совместимости")
         # Проверка параметров ATTDEF: высота 30, стиль Основной стиль, слой Текст
         attdefs = sorted([e for e in blk if e.dxftype() == "ATTDEF"], key=lambda x: -x.dxf.insert.y)  # сверху вниз
         for att in attdefs:
             self.assertEqual(att.dxf.height, 30.0, f"Высота атрибута {att.dxf.tag} должна быть 30.0")
-            self.assertEqual(att.dxf.style, "Основной стиль", f"Стиль атрибута {att.dxf.tag} должен быть Основной стиль")
+            self.assertEqual(att.dxf.style, "Основной стиль (для надписей)", f"Стиль атрибута {att.dxf.tag} должен быть Основной стиль (для надписей)")
             self.assertEqual(att.dxf.layer, "Текст")
             self.assertNotIn("?", att.dxf.text)
         # Проверка порядка сверху вниз: Объект самый верхний, Сетка самая нижняя (как было)
@@ -218,7 +223,7 @@ class TestWindowExport(unittest.TestCase):
         self.assertGreaterEqual(len(area_texts), 1, "Текст площади S=... м² должен присутствовать в правом верхнем углу")
         for at in area_texts:
             self.assertEqual(at.dxf.layer, "Текст")
-            self.assertEqual(at.dxf.style, "Основной стиль")
+            self.assertEqual(at.dxf.style, "Основной стиль (для надписей)")
             self.assertEqual(at.dxf.height, 30.0)
             self.assertAlmostEqual(at.dxf.insert.x, float(self.params["opening"]["width"]), delta=1e-6)
             self.assertAlmostEqual(at.dxf.insert.y, float(oh) + 60.0, delta=1e-6)
@@ -237,7 +242,7 @@ class TestWindowExport(unittest.TestCase):
         ins = list(msp.query(f"INSERT[name=='{block_name}']"))[0]
         for attr in ins.attribs:
             self.assertEqual(attr.dxf.height, 30.0)
-            self.assertEqual(attr.dxf.style, "Основной стиль")
+            self.assertEqual(attr.dxf.style, "Основной стиль (для надписей)")
             self.assertEqual(attr.dxf.layer, "Текст")
 
     def test_08_insertion_point_and_scale(self):
@@ -505,36 +510,66 @@ class TestWindowExport(unittest.TestCase):
                             break
                 self.assertTrue(found, f"Стык створки {p1}->{p2} должен быть в DXF")
 
-        # К7: ГОСТ-стрелки — привязаны к ВИДИМОМУ габариту створки (наружный прямоугольник), а не к внутреннему проёму
+        # К7: ГОСТ-стрелки — для СНАРУЖИ от углов рам/импостов (ячейка), для ИЗНУТРИ от видимого габарита створки
+        view15 = model["params"].get("view", "OUTSIDE").upper()
         for sash in model["sashes"]:
             stype = sash["sash_type"]
-            out = sash["outer_rect"]
-            out_x1, out_y1, out_x2, out_y2 = out
             indicators = sash["indicators"]
-            if stype == "TURN":
-                self.assertEqual(len(indicators), 2, f"TURN {sash['cell']} должно иметь 2 линии")
-                y_mid = (out_y1 + out_y2) / 2
-                for p1, p2 in indicators:
-                    self.assertAlmostEqual(p2[0], out_x2, delta=1e-6)
-                    self.assertAlmostEqual(p2[1], y_mid, delta=1e-6)
-                    self.assertAlmostEqual(p1[0], out_x1, delta=1e-6)
-            elif stype == "TILT":
-                self.assertEqual(len(indicators), 2, f"TILT {sash['cell']} должно иметь 2 линии")
-                x_mid = (out_x1 + out_x2) / 2
-                for p1, p2 in indicators:
-                    self.assertAlmostEqual(p2[0], x_mid, delta=1e-6)
-                    self.assertAlmostEqual(p2[1], out_y2, delta=1e-6)
-                    self.assertAlmostEqual(p1[1], out_y1, delta=1e-6)
-            elif stype == "TURN_TILT":
-                self.assertEqual(len(indicators), 4, f"TURN_TILT {sash['cell']} должно иметь 4 линии")
-                # для TURN_TILT проверяем что все 4 линии в пределах видимого габарита
-                for p1, p2 in indicators:
-                    self.assertGreaterEqual(min(p1[0], p2[0]), out_x1 - 1e-6)
-                    self.assertLessEqual(max(p1[0], p2[0]), out_x2 + 1e-6)
-                    self.assertGreaterEqual(min(p1[1], p2[1]), out_y1 - 1e-6)
-                    self.assertLessEqual(max(p1[1], p2[1]), out_y2 + 1e-6)
-            elif stype == "FIX":
-                self.assertEqual(len(indicators), 0)
+            if view15 == "OUTSIDE":
+                # Снаружи: от ячейки (рама+импост), т.к. наплав скрыт
+                cell = next((c for c in model["cells"] if (c["row"], c["col"]) == tuple(sash["cell"])), None)
+                self.assertIsNotNone(cell, f"Ячейка для створки {sash['cell']} должна существовать")
+                cx1, cy1, cx2, cy2 = cell["x1"], cell["y1"], cell["x2"], cell["y2"]
+                if stype == "TURN":
+                    self.assertEqual(len(indicators), 2, f"TURN {sash['cell']} должно иметь 2 линии")
+                    y_mid = (cy1 + cy2) / 2
+                    for p1, p2 in indicators:
+                        self.assertAlmostEqual(p2[0], cx2, delta=1e-6)
+                        self.assertAlmostEqual(p2[1], y_mid, delta=1e-6)
+                        self.assertAlmostEqual(p1[0], cx1, delta=1e-6)
+                elif stype == "TILT":
+                    self.assertEqual(len(indicators), 2, f"TILT {sash['cell']} должно иметь 2 линии")
+                    x_mid = (cx1 + cx2) / 2
+                    for p1, p2 in indicators:
+                        self.assertAlmostEqual(p2[0], x_mid, delta=1e-6)
+                        self.assertAlmostEqual(p2[1], cy2, delta=1e-6)
+                        self.assertAlmostEqual(p1[1], cy1, delta=1e-6)
+                elif stype == "TURN_TILT":
+                    self.assertEqual(len(indicators), 4, f"TURN_TILT {sash['cell']} должно иметь 4 линии")
+                    for p1, p2 in indicators:
+                        self.assertGreaterEqual(min(p1[0], p2[0]), cx1 - 1e-6)
+                        self.assertLessEqual(max(p1[0], p2[0]), cx2 + 1e-6)
+                        self.assertGreaterEqual(min(p1[1], p2[1]), cy1 - 1e-6)
+                        self.assertLessEqual(max(p1[1], p2[1]), cy2 + 1e-6)
+                elif stype == "FIX":
+                    self.assertEqual(len(indicators), 0)
+            else:
+                # Изнутри — от видимого габарита створки (outer)
+                out = sash["outer_rect"]
+                out_x1, out_y1, out_x2, out_y2 = out
+                if stype == "TURN":
+                    self.assertEqual(len(indicators), 2, f"TURN {sash['cell']} должно иметь 2 линии")
+                    y_mid = (out_y1 + out_y2) / 2
+                    for p1, p2 in indicators:
+                        self.assertAlmostEqual(p2[0], out_x2, delta=1e-6)
+                        self.assertAlmostEqual(p2[1], y_mid, delta=1e-6)
+                        self.assertAlmostEqual(p1[0], out_x1, delta=1e-6)
+                elif stype == "TILT":
+                    self.assertEqual(len(indicators), 2, f"TILT {sash['cell']} должно иметь 2 линии")
+                    x_mid = (out_x1 + out_x2) / 2
+                    for p1, p2 in indicators:
+                        self.assertAlmostEqual(p2[0], x_mid, delta=1e-6)
+                        self.assertAlmostEqual(p2[1], out_y2, delta=1e-6)
+                        self.assertAlmostEqual(p1[1], out_y1, delta=1e-6)
+                elif stype == "TURN_TILT":
+                    self.assertEqual(len(indicators), 4, f"TURN_TILT {sash['cell']} должно иметь 4 линии")
+                    for p1, p2 in indicators:
+                        self.assertGreaterEqual(min(p1[0], p2[0]), out_x1 - 1e-6)
+                        self.assertLessEqual(max(p1[0], p2[0]), out_x2 + 1e-6)
+                        self.assertGreaterEqual(min(p1[1], p2[1]), out_y1 - 1e-6)
+                        self.assertLessEqual(max(p1[1], p2[1]), out_y2 + 1e-6)
+                elif stype == "FIX":
+                    self.assertEqual(len(indicators), 0)
 
         # Подставочный профиль
         if model["sill"]:

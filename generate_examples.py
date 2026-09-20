@@ -21,6 +21,10 @@ import sys
 import ezdxf
 
 from window_export import build_window_model, export_to_dxf, _copy_template_tables
+try:
+    from window_export import convert_to_dwg
+except Exception:
+    convert_to_dwg = None
 
 # Встроенный набор разнообразных примеров (если файла нет)
 BASE_PARAMS = {
@@ -243,7 +247,7 @@ def export_all_to_one(models, output_path, template_path=None):
         ds = doc.dimstyles.get("Основной стиль")
         ds.dxf.dimtxt = 8.0
         ds.dxf.dimasz = 6.0
-        ds.dxf.dimscale = 4.0
+        ds.dxf.dimscale = 10.0
         ds.dxf.dimexe = 3.0
         ds.dxf.dimexo = 2.5
         ds.dxf.dimgap = 3.0
@@ -341,7 +345,7 @@ def export_all_to_one(models, output_path, template_path=None):
         for attrib in bref.attribs:
             attrib.dxf.layer = "Текст"
             try:
-                attrib.dxf.style = "Основной стиль"
+                attrib.dxf.style = "Основной стиль (для надписей)"
                 attrib.dxf.height = 30.0
             except Exception:
                 pass
@@ -349,12 +353,21 @@ def export_all_to_one(models, output_path, template_path=None):
         try:
             # Текст с номером примера ниже блока
             txt = f"{idx+1:02d}. {block_name}"
-            msp.add_text(txt, height=40, dxfattribs={"layer": "Текст", "style": "Основной стиль"}).set_pos((x, y - 400), align="TOP_LEFT")
+            msp.add_text(txt, height=40, dxfattribs={"layer": "Текст", "style": "Основной стиль (для надписей)"}).set_pos((x, y - 400), align="TOP_LEFT")
         except Exception:
             pass
 
     doc.saveas(out_file)
     print(f"Сохранён файл со всеми примерами: {out_file}  ({len(built)} блоков)")
+    # Конвертация всех примеров в DWG (если ODA доступен, как для window_export)
+    try:
+        from window_export import convert_to_dwg as _c2d
+        dwg_res = _c2d(out_file)
+        if dwg_res and pathlib.Path(dwg_res).is_file():
+            print(f"  Конвертация всех примеров в DWG: {dwg_res}")
+    except Exception as e:
+        # ODA не найден — пропускаем
+        pass
     for i, m in enumerate(built):
         print(f"  {i+1:02d}. {m['block_name']}  at {positions[i]}  габарит {m['opening']['width']}x{m['opening']['height']}  сетка {m['grid']['cols']}x{m['grid']['rows']}")
 
