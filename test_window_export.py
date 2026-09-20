@@ -505,28 +505,34 @@ class TestWindowExport(unittest.TestCase):
                             break
                 self.assertTrue(found, f"Стык створки {p1}->{p2} должен быть в DXF")
 
-        # К7: ГОСТ-стрелки
+        # К7: ГОСТ-стрелки — привязаны к ВИДИМОМУ габариту створки (наружный прямоугольник), а не к внутреннему проёму
         for sash in model["sashes"]:
             stype = sash["sash_type"]
-            inn = sash["inner_rect"]
-            in_x1, in_y1, in_x2, in_y2 = inn
+            out = sash["outer_rect"]
+            out_x1, out_y1, out_x2, out_y2 = out
             indicators = sash["indicators"]
             if stype == "TURN":
                 self.assertEqual(len(indicators), 2, f"TURN {sash['cell']} должно иметь 2 линии")
-                y_mid = (in_y1 + in_y2) / 2
+                y_mid = (out_y1 + out_y2) / 2
                 for p1, p2 in indicators:
-                    self.assertAlmostEqual(p2[0], in_x2, delta=1e-6)
+                    self.assertAlmostEqual(p2[0], out_x2, delta=1e-6)
                     self.assertAlmostEqual(p2[1], y_mid, delta=1e-6)
-                    self.assertAlmostEqual(p1[0], in_x1, delta=1e-6)
+                    self.assertAlmostEqual(p1[0], out_x1, delta=1e-6)
             elif stype == "TILT":
                 self.assertEqual(len(indicators), 2, f"TILT {sash['cell']} должно иметь 2 линии")
-                x_mid = (in_x1 + in_x2) / 2
+                x_mid = (out_x1 + out_x2) / 2
                 for p1, p2 in indicators:
                     self.assertAlmostEqual(p2[0], x_mid, delta=1e-6)
-                    self.assertAlmostEqual(p2[1], in_y2, delta=1e-6)
-                    self.assertAlmostEqual(p1[1], in_y1, delta=1e-6)
+                    self.assertAlmostEqual(p2[1], out_y2, delta=1e-6)
+                    self.assertAlmostEqual(p1[1], out_y1, delta=1e-6)
             elif stype == "TURN_TILT":
                 self.assertEqual(len(indicators), 4, f"TURN_TILT {sash['cell']} должно иметь 4 линии")
+                # для TURN_TILT проверяем что все 4 линии в пределах видимого габарита
+                for p1, p2 in indicators:
+                    self.assertGreaterEqual(min(p1[0], p2[0]), out_x1 - 1e-6)
+                    self.assertLessEqual(max(p1[0], p2[0]), out_x2 + 1e-6)
+                    self.assertGreaterEqual(min(p1[1], p2[1]), out_y1 - 1e-6)
+                    self.assertLessEqual(max(p1[1], p2[1]), out_y2 + 1e-6)
             elif stype == "FIX":
                 self.assertEqual(len(indicators), 0)
 

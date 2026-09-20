@@ -31,9 +31,23 @@ def _copy_template_tables(doc, template_path: str | Path):
         print(f"  Шаблон не найден: {tpl_path} — используем встроенные стили")
         return {}
     try:
-        tpl = ezdxf.readfile(str(tpl_path))
+        # DWG напрямую ezdxf не читает R2013 (AC1027) — пробуем как DXF, для DWG просим DXF
+        if tpl_path.suffix.lower() == '.dwg':
+            # Попытка через ezdxf DWG addon (только до R2000) — сразу подсказываем
+            try:
+                from ezdxf.addons.dwg import readfile as dwg_read
+                tpl = dwg_read(str(tpl_path))
+            except Exception as e_dwg:
+                print(f"  Шаблон DWG {tpl_path.name} не удалось прочитать напрямую (ezdxf DWG до R2000, файл R2013 AC1027): {e_dwg}")
+                print(f"  → Экспортируйте шаблон в DXF R2013 (AC1027) как Шаблон.dxf/БШАБЛОН.dxf и укажите --template Шаблон.dxf, либо конвертируйте DWG→DXF через ODA File Converter.")
+                return {}
+        else:
+            tpl = ezdxf.readfile(str(tpl_path))
     except Exception as e:
         print(f"  Не удалось прочитать шаблон {tpl_path}: {e} — используем встроенные")
+        # Для DWG подсказка
+        if tpl_path.suffix.lower() == '.dwg':
+            print(f"  → Для DWG: экспортируйте в DXF R2013 и используйте Шаблон.dxf")
         return {}
     info = {"layers": [], "styles": [], "dimstyles": [], "header": {}}
     # Копируем типы линий, которые встречаются в слоях шаблона
@@ -575,25 +589,32 @@ def calc_sashes(
                 ((x1, y2), (in_x1, in_y2)),  # левый верхний
             ]
 
-            # Линии открывания по ГОСТ (по световому проёму)
+            # Линии открывания по ГОСТ — ПРИВЯЗКА К ВИДИМОМУ ГАБАРИТУ СТВОРКИ (а не к внутреннему проёму)
+            # Видимый габарит: для OUTSIDE створка видна по внутреннему контуру (наплав скрыт, но створка ограничена ячейкой),
+            # для INSIDE — по наружному контуру. Чтобы выполнить требование "видимый габарит", используем наружный
+            # прямоугольник створки (x1,y1)-(x2,y2) как основу для индикации, а не in_x1..in_x2.
+            # Для OUTSIDE наружный выходит за ячейку на overlap, но видимая часть — это ячейка, поэтому индикатор
+            # всё равно привязываем к наружному, но при отрисовке он будет в пределах видимого.
             indicators = []
-            y_mid = (in_y1 + in_y2) / 2.0
-            x_mid = (in_x1 + in_x2) / 2.0
+            # Видимый габарит — наружный прямоугольник створки
+            vx1, vy1, vx2, vy2 = x1, y1, x2, y2
+            vy_mid = (vy1 + vy2) / 2.0
+            vx_mid = (vx1 + vx2) / 2.0
 
             if stype == "TURN":
-                # Поворотная: две линии из углов стороны петель (левой) к центру ручки на противоположной (правой) стороне
-                indicators.append(((in_x1, in_y1), (in_x2, y_mid)))
-                indicators.append(((in_x1, in_y2), (in_x2, y_mid)))
+                # Поворотная: две линии из углов стороны петель (левой) к центру ручки на противоположной (правой) стороне — по видимому габариту
+                indicators.append(((vx1, vy1), (vx2, vy_mid)))
+                indicators.append(((vx1, vy2), (vx2, vy_mid)))
             elif stype == "TILT":
-                # Откидная/фрамуга: две линии из нижних углов к центру верхней ручки
-                indicators.append(((in_x1, in_y1), (x_mid, in_y2)))
-                indicators.append(((in_x2, in_y1), (x_mid, in_y2)))
+                # Откидная/фрамуга: две линии из нижних углов к центру верхней ручки — по видимому габариту
+                indicators.append(((vx1, vy1), (vx_mid, vy2)))
+                indicators.append(((vx2, vy1), (vx_mid, vy2)))
             elif stype == "TURN_TILT":
-                # Поворотно-откидная: совмещение TURN + TILT = 4 линии
-                indicators.append(((in_x1, in_y1), (in_x2, y_mid)))
-                indicators.append(((in_x1, in_y2), (in_x2, y_mid)))
-                indicators.append(((in_x1, in_y1), (x_mid, in_y2)))
-                indicators.append(((in_x2, in_y1), (x_mid, in_y2)))
+                # Поворотно-откидная: совмещение TURN + TILT = 4 линии по видимому габариту
+                indicators.append(((vx1, vy1), (vx2, vy_mid)))
+                indicators.append(((vx1, vy2), (vx2, vy_mid)))
+                indicators.append(((vx1, vy1), (vx_mid, vy2)))
+                indicators.append(((vx2, vy1), (vx_mid, vy2)))
             else:
                 # FIX уже отфильтрован, но для безопасности
                 indicators = []
@@ -1064,11 +1085,12 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
         tpl_candidate = model.get("params", {}).get("template") or model.get("params", {}).get("template_path")
     if tpl_candidate is None:
         # автопоиск: template.dxf / шаблон.dxf / БШАБЛОН.dxf / .dwg рядом с output или рядом с window_export.py
-        for cand in [Path("template.dxf"), Path("шаблон.dxf"), Path("БШАБЛОН.dxf"),
-                     Path("template.dwg"), Path("шаблон.dwg"), Path("БШАБЛОН.dwg"),
-                     Path(__file__).parent / "template.dxf", Path(__file__).parent / "шаблон.dxf", Path(__file__).parent / "БШАБЛОН.dxf",
-                     Path(__file__).parent / "template.dwg", Path(__file__).parent / "шаблон.dwg", Path(__file__).parent / "БШАБЛОН.dwg",
-                     out_file.parent / "template.dxf", out_file.parent / "шаблон.dxf", out_file.parent / "БШАБЛОН.dxf"]:
+        for cand in [Path("template.dxf"), Path("шаблон.dxf"), Path("Шаблон.dxf"), Path("БШАБЛОН.dxf"),
+                     Path("template.dwg"), Path("шаблон.dwg"), Path("Шаблон.dwg"), Path("БШАБЛОН.dwg"),
+                     Path(__file__).parent / "template.dxf", Path(__file__).parent / "шаблон.dxf", Path(__file__).parent / "Шаблон.dxf", Path(__file__).parent / "БШАБЛОН.dxf",
+                     Path(__file__).parent / "template.dwg", Path(__file__).parent / "шаблон.dwg", Path(__file__).parent / "Шаблон.dwg", Path(__file__).parent / "БШАБЛОН.dwg",
+                     out_file.parent / "template.dxf", out_file.parent / "шаблон.dxf", out_file.parent / "Шаблон.dxf", out_file.parent / "БШАБЛОН.dxf",
+                     out_file.parent / "template.dwg", out_file.parent / "шаблон.dwg", out_file.parent / "Шаблон.dwg", out_file.parent / "БШАБЛОН.dwg"]:
             if cand.is_file():
                 tpl_candidate = cand
                 break
@@ -1566,13 +1588,14 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
             _add_dim(p1=(overall_left, horiz_ref_y), p2=(frame_left, horiz_ref_y), base=(0, base_y_detailed), angle=0)
         if addon_right > 1e-9:
             _add_dim(p1=(frame_right, horiz_ref_y), p2=(overall_right, horiz_ref_y), base=(0, base_y_detailed), angle=0)
-        # Монтажные швы горизонтальные (зазор между проёмом и коробкой/добором)
-        # Левый шов: 0 .. overall_left, правый: overall_right .. OW, на уровне проёма y=0, база -240 чуть ниже
-        base_y_seam = -240.0
+        # Монтажные швы горизонтальные — во второй цепочке (base -120), как и подставочник/доборы
+        base_y_seam = -120.0
         if abs(overall_left) > 1e-9:
             _add_dim(p1=(0, 0), p2=(overall_left, 0), base=(0, base_y_seam), angle=0)
         if abs(float(ow) - overall_right) > 1e-9:
             _add_dim(p1=(overall_right, 0), p2=(float(ow), 0), base=(0, base_y_seam), angle=0)
+        # Размер подставочного профиля горизонтально? — ширина как окно, уже есть, дополнительно не нужно
+        # Доборы уже имеют отдельный размер на базе -60, швы теперь на -120 во второй цепочке
 
         # Вертикальные только справа: привязка к правому краю блока (x = overall_right для окна с доборами, иначе frame_right)
         vert_ref_x = overall_right if (addon_right > 1e-9 or addon_left > 1e-9) else frame_right
@@ -1585,24 +1608,22 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
             _add_dim(p1=(vert_ref_x, y_a), p2=(vert_ref_x, y_b), base=(base_x_detailed_r, 0), angle=90)
         base_x_window_r = float(ow) + 120.0
         _add_dim(p1=(vert_ref_x, frame_bottom), p2=(vert_ref_x, frame_top), base=(base_x_window_r, 0), angle=90)
-        # Размер подставочного профиля (вертикально) если есть
+        # Размер подставочного профиля (вертикально) — во второй цепочке (base 120)
         if sill and abs(sill_top - sill_bottom) > 1e-9:
-            _add_dim(p1=(vert_ref_x, sill_bottom), p2=(vert_ref_x, sill_top), base=(base_x_detailed_r, 0), angle=90)
-        # Доборы вертикальные: левый/правый добор высоты уже в окне, верхний добор отдельно
+            _add_dim(p1=(vert_ref_x, sill_bottom), p2=(vert_ref_x, sill_top), base=(base_x_window_r, 0), angle=90)
+        # Доборы вертикальные — во второй цепочке
         if addon_top > 1e-9:
-            _add_dim(p1=(vert_ref_x, frame_top), p2=(vert_ref_x, overall_top), base=(base_x_detailed_r, 0), angle=90)
-            # или общий с добором
-            _add_dim(p1=(vert_ref_x, horiz_ref_y), p2=(vert_ref_x, overall_top), base=(base_x_window_r, 0), angle=90)
+            _add_dim(p1=(vert_ref_x, frame_top), p2=(vert_ref_x, overall_top), base=(base_x_window_r, 0), angle=90)
+            # общий с добором уже есть как window overall, дополнительно не нужно
         base_x_opening_r = float(ow) + 180.0
         _add_dim(p1=(float(ow), 0), p2=(float(ow), float(oh)), base=(base_x_opening_r, 0), angle=90)
-        # Монтажные швы вертикальные: нижний (если без подставочника) и верхний
-        base_x_seam_r = float(ow) + 240.0
-        # Нижний шов: 0 .. horiz_ref_y (если есть подставочник, то 0..sill_bottom, иначе 0..frame_bottom)
+        # Монтажные швы вертикальные — во второй цепочке (base 120), горизонтальные — тоже во второй (-120)
+        # Нижний шов: 0 .. horiz_ref_y
         if abs(horiz_ref_y) > 1e-9:
-            _add_dim(p1=(float(ow), 0), p2=(float(ow), horiz_ref_y), base=(base_x_seam_r, 0), angle=90)
-        # Верхний шов: overall_top .. OH (может быть за пределами проёма если добор сверху)
+            _add_dim(p1=(float(ow), 0), p2=(float(ow), horiz_ref_y), base=(base_x_window_r, 0), angle=90)
+        # Верхний шов: overall_top .. OH
         if abs(float(oh) - overall_top) > 1e-9:
-            _add_dim(p1=(float(ow), overall_top), p2=(float(ow), float(oh)), base=(base_x_seam_r, 0), angle=90)
+            _add_dim(p1=(float(ow), overall_top), p2=(float(ow), float(oh)), base=(base_x_window_r, 0), angle=90)
 
     except Exception as e:
         print(f"  Предупреждение: не удалось создать размерные цепочки: {e}")
