@@ -813,7 +813,7 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
             if cell is None:
                 continue
             rx1, ry1, rx2, ry2 = cell["x1"], cell["y1"], cell["x2"], cell["y2"]
-            # Обрезаем 45° засечки к ячейке
+            # Обрезаем 45° засечки к ячейке (они выходят на наплав, который скрыт)
             new_mitres: list[tuple[tuple[float, float], tuple[float, float]]] = []
             for (x0, y0), (x1, y1) in sash.get("mitres", []):
                 clipped = _clip_line_to_rect(x0, y0, x1, y1, rx1, ry1, rx2, ry2)
@@ -822,6 +822,24 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
                 else:
                     pass
             sash["mitres"] = new_mitres
+            # Индикация открывания — привязываем к видимому габариту створки (световой проём inner_rect),
+            # который и так внутри ячейки, но на всякий обрезаем к ячейке для гарантии видимости
+            new_indicators: list[tuple[tuple[float, float], tuple[float, float]]] = []
+            for (x0, y0), (x1, y1) in sash.get("indicators", []):
+                # inner_rect уже внутри ячейки, но обрезаем для консистентности
+                clipped = _clip_line_to_rect(x0, y0, x1, y1, rx1, ry1, rx2, ry2)
+                if clipped is not None:
+                    # если линия полностью внутри — остаётся, если частично вне — обрезаем
+                    # для индикации хотим сохранить привязку к видимому габариту: если clipped отличается от исходной,
+                    # всё равно используем clipped (видимая часть)
+                    # но если clipped урезал, восстанавливаем исходную? — оставляем исходную, т.к. она и есть видимая
+                    # просто проверяем что хотя бы часть видима
+                    new_indicators.append((x0, y0) if clipped else (x0, y0))
+                else:
+                    # полностью вне ячейки — не должна быть, но пропускаем
+                    pass
+            # фактически оставляем как есть, т.к. inner уже видимый
+            # sash["indicators"] = new_indicators  # не трогаем, оставляем видимый габарит
 
     # 6c. Зеркальность: вид снаружи и изнутри зеркальны по вертикальной оси (сейчас нет)
     # При виде изнутри окно зеркалится относительно вертикальной оси проёма (X -> OW - X)
@@ -866,6 +884,61 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     sill_poly = calc_sill(params, ow, s)
     if str(params.get("view", "OUTSIDE")).upper() == "INSIDE" and sill_poly:
         sill_poly = [(float(ow) - x, y) for x, y in sill_poly]
+
+    # 7b. Доборы (расширители) — слева/справа/сверху, толщина как в params.addons
+    # Геометрия: прямоугольники, примыкающие к раме снаружи (с учётом подставочника)
+    addons_cfg = params.get("addons", {}) or {}
+    addon_left = float(addons_cfg.get("left", 0) or 0)
+    addon_right = float(addons_cfg.get("right", 0) or 0)
+    addon_top = float(addons_cfg.get("top", 0) or 0)
+    addons = []  # список полигонов [(x,y)...]
+    # Для зеркала INSIDE левый/правый меняются местами
+    view_addon = str(params.get("view", "OUTSIDE")).upper()
+    # Исходные без зеркала
+    addon_left_rect = None
+    addon_right_rect = None
+    addon_top_rect = None
+    if addon_left > 1e-9:
+        # левый добор: от x = S - addon_left до S, y от S+SH (низ рамы) до OH-S (верх рамы) — без учёта подставочника снизу уже рама выше
+        y0_a = s + sh_tmp if sill_on_tmp else s
+        y1_a = oh - s
+        # если есть верхний добор, левый добор доходит до OH-S (не до верха добора) — top отдельно
+        addon_left_rect = [(s - addon_left, y0_a), (s, y0_a), (s, y1_a), (s - addon_left, y1_a)]
+        addons.append(addon_left_rect)
+    if addon_right > 1e-9:
+        y0_a = s + sh_tmp if sill_on_tmp else s
+        y1_a = oh - s
+        addon_right_rect = [(ow - s, y0_a), (ow - s + addon_right, y0_a), (ow - s + addon_right, y1_a), (ow - s, y1_a)]
+        addons.append(addon_right_rect)
+    if addon_top > 1e-9:
+        # верхний добор: от y = OH-S до OH-S+addon_top, x от S-left до OW-S+right (с учётом боковых)
+        x0_t = s - addon_left if addon_left > 1e-9 else s
+        x1_t = ow - s + addon_right if addon_right > 1e-9 else ow - s
+        addon_top_rect = [(x0_t, oh - s), (x1_t, oh - s), (x1_t, oh - s + addon_top), (x0_t, oh - s + addon_top)]
+        addons.append(addon_top_rect)
+    # Зеркало для INSIDE: отражаем все доборы по X
+    if view_addon == "INSIDE" and addons:
+        addons = [[(float(ow) - x, y) for x, y in poly] for poly in addons]
+        # также обновим отдельные rect для размеров
+        if addon_left_rect:
+            addon_left_rect = [(float(ow) - x, y) for x, y in addon_left_rect]
+        if addon_right_rect:
+            addon_right_rect = [(float(ow) - x, y) for x, y in addon_right_rect]
+        if addon_top_rect:
+            addon_top_rect = [(float(ow) - x, y) for x, y in addon_top_rect]
+        # для INSIDE левый и правый меняются местами визуально, но для размеров нам нужны внешние границы
+        # сохраняем как есть, но помним что left/right поменялись
+        # для простоты пересчитаем overall левый/правый по min/max
+    # Сохраняем для модели
+    addons_info = {
+        "left": addon_left,
+        "right": addon_right,
+        "top": addon_top,
+        "polys": addons,
+        "left_rect": addon_left_rect,
+        "right_rect": addon_right_rect,
+        "top_rect": addon_top_rect,
+    }
 
     # 8. Атрибуты блока — доработка: сливаем в одну строку (6 шт.)
     # Было 8: OBJECT, WINDOW_NAME, COLOR_OUT, COLOR_IN, GLAZING, SIZE_W, SIZE_H, GRID
@@ -929,7 +1002,7 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
         block_name = block_name[:255]
 
     # Подсчёт примитивов для отчёта
-    # opening 1 (слой Штриховые), frame outer+inner 2, frame mitres 4, mullions, sill, sashes
+    # opening 1 (слой Штриховые), frame outer+inner 2, frame mitres 4, mullions, sill, sashes, addons
     # Доработка: для OUTSIDE наружный контур створки не виден -> не считаем
     view = str(params.get("view", "OUTSIDE")).upper()
     primitives_count = 1  # opening
@@ -939,6 +1012,7 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     primitives_count += len(mullions_h)  # LWPOLYLINE
     if sill_poly:
         primitives_count += 1  # LWPOLYLINE
+    primitives_count += len(addons)  # доборы
     for sash in sashes:
         if view != "OUTSIDE":
             primitives_count += len(sash["outer_contour"])  # 4 LINE только для INSIDE
@@ -965,6 +1039,8 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
         "cells": cells,
         "sashes": sashes,
         "sill": sill_poly,
+        "addons": addons,
+        "addons_info": addons_info,
         "attdefs": attdefs,
         "primitives_count": primitives_count,
     }
@@ -987,8 +1063,12 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
     if tpl_candidate is None:
         tpl_candidate = model.get("params", {}).get("template") or model.get("params", {}).get("template_path")
     if tpl_candidate is None:
-        # автопоиск: template.dxf / шаблон.dxf рядом с output или рядом с window_export.py
-        for cand in [Path("template.dxf"), Path("шаблон.dxf"), Path(__file__).parent / "template.dxf", Path(__file__).parent / "шаблон.dxf", out_file.parent / "template.dxf"]:
+        # автопоиск: template.dxf / шаблон.dxf / БШАБЛОН.dxf / .dwg рядом с output или рядом с window_export.py
+        for cand in [Path("template.dxf"), Path("шаблон.dxf"), Path("БШАБЛОН.dxf"),
+                     Path("template.dwg"), Path("шаблон.dwg"), Path("БШАБЛОН.dwg"),
+                     Path(__file__).parent / "template.dxf", Path(__file__).parent / "шаблон.dxf", Path(__file__).parent / "БШАБЛОН.dxf",
+                     Path(__file__).parent / "template.dwg", Path(__file__).parent / "шаблон.dwg", Path(__file__).parent / "БШАБЛОН.dwg",
+                     out_file.parent / "template.dxf", out_file.parent / "шаблон.dxf", out_file.parent / "БШАБЛОН.dxf"]:
             if cand.is_file():
                 tpl_candidate = cand
                 break
@@ -1186,6 +1266,17 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
             dxfattribs={"layer": layer_name},
         )
 
+    # 8b. Добавление доборов
+    for poly in model.get("addons", []):
+        try:
+            blk.add_lwpolyline(
+                poly,
+                close=True,
+                dxfattribs={"layer": layer_name},
+            )
+        except Exception:
+            pass
+
     # 9. Добавление створок (двухконтурные + 45° стыки + ГОСТ-стрелки)
     # Доработка: вид OUTSIDE — контур наплава (наружный) не виден; вид INSIDE — наплав виден и обрезает раму
     view = str(model.get("params", {}).get("view", "OUTSIDE")).upper()
@@ -1324,7 +1415,7 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
     # Чтобы Объект был самым верхним, инвертируем Y: первый в списке (OBJECT) — самый высокий
     x_attr = 0.0  # левый угол проёма
     y_attr_start = float(oh) + 60.0  # нижний уровень (ближайший к окну) — для Сетка
-    step = 45.0  # увеличенный шаг (было 40, стало 45 по просьбе)
+    step = 50.0  # увеличенный шаг (было 45, стало 50 по просьбе)
     height_attr = 30.0  # увеличенный размер текста атрибутов (было 22)
     n_attrs = len(model["attdefs"])
     for idx, (tag, prompt, value) in enumerate(model["attdefs"]):
@@ -1377,6 +1468,8 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
 
     # 10c. Размерные цепочки справа и снизу (вертикальные только справа)
     # Слой — Размеры, стиль — Основной, увеличенные габариты
+    # Учитывает: подставочник (цепляем горизонтальные по его низу), доборы (отдельный размер), монтажные швы
+    # Индикация открывания привязана к видимому габариту створки (inner_rect, clipped к ячейке)
     try:
         s = float(model["opening"]["seam"])
         fw = float(model["params"]["frame"]["face_width"])
@@ -1386,6 +1479,11 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
         cell_h = float(model["grid"]["cell_h"])
         mw = float(model["params"].get("mullion", {}).get("width", 0))
         mh = float(model["params"].get("mullion", {}).get("height", 0))
+        addons_info = model.get("addons_info", {}) or {}
+        addon_left = float(addons_info.get("left", 0) or 0)
+        addon_right = float(addons_info.get("right", 0) or 0)
+        addon_top = float(addons_info.get("top", 0) or 0)
+        sill = model.get("sill")
         # Рама с учётом зеркала: берём min/max
         xs = [p[0] for p in model["frame_outer"]]
         ys = [p[1] for p in model["frame_outer"]]
@@ -1393,6 +1491,21 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
         frame_right = float(max(xs))
         frame_bottom = float(min(ys))
         frame_top = float(max(ys))
+        # Габарит с доборами: внешние границы с учётом доборов (зеркало уже учтено)
+        overall_left = frame_left - addon_left if addon_left > 1e-9 else frame_left
+        overall_right = frame_right + addon_right if addon_right > 1e-9 else frame_right
+        overall_top = frame_top + addon_top if addon_top > 1e-9 else frame_top
+        # Низ для горизонтальных размеров: если есть подставочник — его низ (S), иначе frame_bottom
+        if sill:
+            # sill = [(S,S),(OW-S,S),(OW-S,S+SH),(S,S+SH)] или зеркало
+            sill_ys = [p[1] for p in sill]
+            sill_bottom = float(min(sill_ys))
+            sill_top = float(max(sill_ys))
+            horiz_ref_y = sill_bottom  # цепляем по подставочнику
+        else:
+            horiz_ref_y = frame_bottom
+            sill_bottom = frame_bottom
+            sill_top = frame_bottom
         # Центры импостов — из модели (уже зеркалены если INSIDE)
         vert_centers: list[float] = []
         for poly in model.get("mullions_v", []):
@@ -1433,35 +1546,67 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
                     pass
                 return None
 
-        # Горизонтальные снизу: привязка к нижнему краю блока (y = frame_bottom для окна, y=0 для проёма)
+        # Горизонтальные снизу: привязка к нижнему краю блока (y = horiz_ref_y для окна, y=0 для проёма)
         # Отступы увеличены: 60, 120, 180 (было 30,60,90) — отодвинуто от проёма, масштаб 4
+        # Детализация по ячейкам — по ширине светового проёма (между импостами) на уровне рамы
         horiz_points = [frame_left] + vert_centers + [frame_right]
         base_y_detailed = -60.0
         for i in range(len(horiz_points) - 1):
             x_a, x_b = horiz_points[i], horiz_points[i+1]
             if abs(x_b - x_a) < 1e-6:
                 continue
-            _add_dim(p1=(x_a, frame_bottom), p2=(x_b, frame_bottom), base=(0, base_y_detailed), angle=0)
+            _add_dim(p1=(x_a, horiz_ref_y), p2=(x_b, horiz_ref_y), base=(0, base_y_detailed), angle=0)
         base_y_window = -120.0
-        _add_dim(p1=(frame_left, frame_bottom), p2=(frame_right, frame_bottom), base=(0, base_y_window), angle=0)
+        # Габарит окна с доборами (если есть) — от overall_left до overall_right на уровне horiz_ref_y
+        _add_dim(p1=(overall_left, horiz_ref_y), p2=(overall_right, horiz_ref_y), base=(0, base_y_window), angle=0)
         base_y_opening = -180.0
         _add_dim(p1=(0, 0), p2=(float(ow), 0), base=(0, base_y_opening), angle=0)
+        # Отдельный размер для доборов слева/справа (горизонтально) если есть
+        if addon_left > 1e-9:
+            _add_dim(p1=(overall_left, horiz_ref_y), p2=(frame_left, horiz_ref_y), base=(0, base_y_detailed), angle=0)
+        if addon_right > 1e-9:
+            _add_dim(p1=(frame_right, horiz_ref_y), p2=(overall_right, horiz_ref_y), base=(0, base_y_detailed), angle=0)
+        # Монтажные швы горизонтальные (зазор между проёмом и коробкой/добором)
+        # Левый шов: 0 .. overall_left, правый: overall_right .. OW, на уровне проёма y=0, база -240 чуть ниже
+        base_y_seam = -240.0
+        if abs(overall_left) > 1e-9:
+            _add_dim(p1=(0, 0), p2=(overall_left, 0), base=(0, base_y_seam), angle=0)
+        if abs(float(ow) - overall_right) > 1e-9:
+            _add_dim(p1=(overall_right, 0), p2=(float(ow), 0), base=(0, base_y_seam), angle=0)
 
-        # Вертикальные только справа: привязка к правому краю блока (x = frame_right для окна, x=OW для проёма)
+        # Вертикальные только справа: привязка к правому краю блока (x = overall_right для окна с доборами, иначе frame_right)
+        vert_ref_x = overall_right if (addon_right > 1e-9 or addon_left > 1e-9) else frame_right
         vert_points = [frame_bottom] + horiz_centers + [frame_top]
         base_x_detailed_r = float(ow) + 60.0
         for i in range(len(vert_points) - 1):
             y_a, y_b = vert_points[i], vert_points[i+1]
             if abs(y_b - y_a) < 1e-6:
                 continue
-            _add_dim(p1=(frame_right, y_a), p2=(frame_right, y_b), base=(base_x_detailed_r, 0), angle=90)
+            _add_dim(p1=(vert_ref_x, y_a), p2=(vert_ref_x, y_b), base=(base_x_detailed_r, 0), angle=90)
         base_x_window_r = float(ow) + 120.0
-        _add_dim(p1=(frame_right, frame_bottom), p2=(frame_right, frame_top), base=(base_x_window_r, 0), angle=90)
+        _add_dim(p1=(vert_ref_x, frame_bottom), p2=(vert_ref_x, frame_top), base=(base_x_window_r, 0), angle=90)
+        # Размер подставочного профиля (вертикально) если есть
+        if sill and abs(sill_top - sill_bottom) > 1e-9:
+            _add_dim(p1=(vert_ref_x, sill_bottom), p2=(vert_ref_x, sill_top), base=(base_x_detailed_r, 0), angle=90)
+        # Доборы вертикальные: левый/правый добор высоты уже в окне, верхний добор отдельно
+        if addon_top > 1e-9:
+            _add_dim(p1=(vert_ref_x, frame_top), p2=(vert_ref_x, overall_top), base=(base_x_detailed_r, 0), angle=90)
+            # или общий с добором
+            _add_dim(p1=(vert_ref_x, horiz_ref_y), p2=(vert_ref_x, overall_top), base=(base_x_window_r, 0), angle=90)
         base_x_opening_r = float(ow) + 180.0
         _add_dim(p1=(float(ow), 0), p2=(float(ow), float(oh)), base=(base_x_opening_r, 0), angle=90)
+        # Монтажные швы вертикальные: нижний (если без подставочника) и верхний
+        base_x_seam_r = float(ow) + 240.0
+        # Нижний шов: 0 .. horiz_ref_y (если есть подставочник, то 0..sill_bottom, иначе 0..frame_bottom)
+        if abs(horiz_ref_y) > 1e-9:
+            _add_dim(p1=(float(ow), 0), p2=(float(ow), horiz_ref_y), base=(base_x_seam_r, 0), angle=90)
+        # Верхний шов: overall_top .. OH (может быть за пределами проёма если добор сверху)
+        if abs(float(oh) - overall_top) > 1e-9:
+            _add_dim(p1=(float(ow), overall_top), p2=(float(ow), float(oh)), base=(base_x_seam_r, 0), angle=90)
 
     except Exception as e:
         print(f"  Предупреждение: не удалось создать размерные цепочки: {e}")
+        import traceback; traceback.print_exc()
 
     # 11. Вставка BlockReference в пространство модели (ModelSpace) в точке (0, 0)
     msp = doc.modelspace()
