@@ -31,9 +31,23 @@ def _copy_template_tables(doc, template_path: str | Path):
         print(f"  Шаблон не найден: {tpl_path} — используем встроенные стили")
         return {}
     try:
-        tpl = ezdxf.readfile(str(tpl_path))
+        # DWG напрямую ezdxf не читает R2013 (AC1027) — пробуем как DXF, для DWG просим DXF
+        if tpl_path.suffix.lower() == '.dwg':
+            # Попытка через ezdxf DWG addon (только до R2000) — сразу подсказываем
+            try:
+                from ezdxf.addons.dwg import readfile as dwg_read
+                tpl = dwg_read(str(tpl_path))
+            except Exception as e_dwg:
+                print(f"  Шаблон DWG {tpl_path.name} не удалось прочитать напрямую (ezdxf DWG до R2000, файл R2013 AC1027): {e_dwg}")
+                print(f"  → Экспортируйте шаблон в DXF R2013 (AC1027) как Шаблон.dxf/БШАБЛОН.dxf и укажите --template Шаблон.dxf, либо конвертируйте DWG→DXF через ODA File Converter.")
+                return {}
+        else:
+            tpl = ezdxf.readfile(str(tpl_path))
     except Exception as e:
         print(f"  Не удалось прочитать шаблон {tpl_path}: {e} — используем встроенные")
+        # Для DWG подсказка
+        if tpl_path.suffix.lower() == '.dwg':
+            print(f"  → Для DWG: экспортируйте в DXF R2013 и используйте Шаблон.dxf")
         return {}
     info = {"layers": [], "styles": [], "dimstyles": [], "header": {}}
     # Копируем типы линий, которые встречаются в слоях шаблона
@@ -1071,11 +1085,12 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
         tpl_candidate = model.get("params", {}).get("template") or model.get("params", {}).get("template_path")
     if tpl_candidate is None:
         # автопоиск: template.dxf / шаблон.dxf / БШАБЛОН.dxf / .dwg рядом с output или рядом с window_export.py
-        for cand in [Path("template.dxf"), Path("шаблон.dxf"), Path("БШАБЛОН.dxf"),
-                     Path("template.dwg"), Path("шаблон.dwg"), Path("БШАБЛОН.dwg"),
-                     Path(__file__).parent / "template.dxf", Path(__file__).parent / "шаблон.dxf", Path(__file__).parent / "БШАБЛОН.dxf",
-                     Path(__file__).parent / "template.dwg", Path(__file__).parent / "шаблон.dwg", Path(__file__).parent / "БШАБЛОН.dwg",
-                     out_file.parent / "template.dxf", out_file.parent / "шаблон.dxf", out_file.parent / "БШАБЛОН.dxf"]:
+        for cand in [Path("template.dxf"), Path("шаблон.dxf"), Path("Шаблон.dxf"), Path("БШАБЛОН.dxf"),
+                     Path("template.dwg"), Path("шаблон.dwg"), Path("Шаблон.dwg"), Path("БШАБЛОН.dwg"),
+                     Path(__file__).parent / "template.dxf", Path(__file__).parent / "шаблон.dxf", Path(__file__).parent / "Шаблон.dxf", Path(__file__).parent / "БШАБЛОН.dxf",
+                     Path(__file__).parent / "template.dwg", Path(__file__).parent / "шаблон.dwg", Path(__file__).parent / "Шаблон.dwg", Path(__file__).parent / "БШАБЛОН.dwg",
+                     out_file.parent / "template.dxf", out_file.parent / "шаблон.dxf", out_file.parent / "Шаблон.dxf", out_file.parent / "БШАБЛОН.dxf",
+                     out_file.parent / "template.dwg", out_file.parent / "шаблон.dwg", out_file.parent / "Шаблон.dwg", out_file.parent / "БШАБЛОН.dwg"]:
             if cand.is_file():
                 tpl_candidate = cand
                 break

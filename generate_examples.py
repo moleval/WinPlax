@@ -205,8 +205,10 @@ def export_all_to_one(models, output_path, template_path=None):
             pass
         # если есть автопоиск шаблона — попробуем
         if template_path is None:
-            for cand in [Path("template.dxf"), Path("шаблон.dxf"), Path("БШАБЛОН.dxf"),
-                         Path("БШАБЛОН.dwg"), Path(__file__).parent / "БШАБЛОН.dxf"]:
+            for cand in [Path("template.dxf"), Path("шаблон.dxf"), Path("Шаблон.dxf"), Path("БШАБЛОН.dxf"),
+                         Path("template.dwg"), Path("шаблон.dwg"), Path("Шаблон.dwg"), Path("БШАБЛОН.dwg"),
+                         Path(__file__).parent / "template.dxf", Path(__file__).parent / "шаблон.dxf", Path(__file__).parent / "Шаблон.dxf", Path(__file__).parent / "БШАБЛОН.dxf",
+                         Path(__file__).parent / "template.dwg", Path(__file__).parent / "шаблон.dwg", Path(__file__).parent / "Шаблон.dwg", Path(__file__).parent / "БШАБЛОН.dwg"]:
                 if cand.is_file():
                     print(f"Автоподхват шаблона: {cand}")
                     _copy_template_tables(doc, cand)
