@@ -637,19 +637,54 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
             for (x0, y0), (x1, y1) in sash.get("mitres", []):
                 clipped = _clip_line_to_rect(x0, y0, x1, y1, rx1, ry1, rx2, ry2)
                 if clipped is not None:
-                    # clipped уже внутри ячейки; но нужно сохранить только видимую часть
-                    # Для засечек обычно одна точка внутри (inner), вторая снаружи -> clipped даёт отрезок от границы ячейки до inner
-                    # Если линия полностью внутри (редкий случай) — оставляем как есть
                     new_mitres.append(clipped)
                 else:
-                    # Линия полностью вне — не рисуем (обрезана рамой)
                     pass
             sash["mitres"] = new_mitres
-            # Для OUTSIDE наружный контур уже скрывается в export_to_dxf, но для модели тоже пометим обрезанным
-            # (не используется в примитивах для OUTSIDE)
 
-    # 7. Подставочный профиль
+    # 6c. Зеркальность: вид снаружи и изнутри зеркальны по вертикальной оси (сейчас нет)
+    # При виде изнутри окно зеркалится относительно вертикальной оси проёма (X -> OW - X)
+    # Атрибуты, размеры и т.п. не зеркалятся, только геометрия окна
+    if str(params.get("view", "OUTSIDE")).upper() == "INSIDE":
+        def _mirror_pt(pt: tuple[float, float]) -> tuple[float, float]:
+            return (float(ow) - float(pt[0]), float(pt[1]))
+        def _mirror_line(a: tuple[float, float], b: tuple[float, float]):
+            return (_mirror_pt(a), _mirror_pt(b))
+        # Открытие
+        opening_poly = [_mirror_pt(p) for p in opening_poly]
+        # Рама
+        frame_outer = [_mirror_pt(p) for p in frame_outer]
+        frame_inner = [_mirror_pt(p) for p in frame_inner]
+        frame_mitres = [_mirror_line(a, b) for a, b in frame_mitres]
+        # Импосты
+        mullions_v = [[_mirror_pt(p) for p in poly] for poly in mullions_v]
+        mullions_h = [[_mirror_pt(p) for p in poly] for poly in mullions_h]
+        # Стрипы и ячейки
+        strips_x = [(float(ow) - x2, float(ow) - x1) for x1, x2 in strips_x]
+        strips_x.sort(key=lambda v: v[0])
+        for cell in cells:
+            ox1, ox2 = cell["x1"], cell["x2"]
+            cell["x1"] = float(ow) - ox2
+            cell["x2"] = float(ow) - ox1
+        # Створки
+        for sash in sashes:
+            if sash.get("outer_rect"):
+                x1, y1, x2, y2 = sash["outer_rect"]
+                sash["outer_rect"] = (float(ow) - x2, y1, float(ow) - x1, y2)
+            if sash.get("inner_rect"):
+                x1, y1, x2, y2 = sash["inner_rect"]
+                sash["inner_rect"] = (float(ow) - x2, y1, float(ow) - x1, y2)
+            for key in ("outer_contour", "inner_contour", "contour", "mitres", "indicators"):
+                if key in sash and sash[key]:
+                    sash[key] = [((float(ow) - x0, y0), (float(ow) - x1, y1)) for (x0, y0), (x1, y1) in sash[key]]
+        # Подставочник будет зеркалиться ниже, но он симметричен — продублируем
+        # (фактически sill_poly зеркалится так же, но результат тот же прямоугольник)
+
+
+    # 7. Подставочный профиль (зеркалится для INSIDE как и остальная геометрия)
     sill_poly = calc_sill(params, ow, s)
+    if str(params.get("view", "OUTSIDE")).upper() == "INSIDE" and sill_poly:
+        sill_poly = [(float(ow) - x, y) for x, y in sill_poly]
 
     # 8. Атрибуты блока — доработка: сливаем в одну строку (6 шт.)
     # Было 8: OBJECT, WINDOW_NAME, COLOR_OUT, COLOR_IN, GLAZING, SIZE_W, SIZE_H, GRID
@@ -759,6 +794,12 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
     doc = ezdxf.new("R2013")
     doc.encoding = "cp1251"
     doc.header["$DWGCODEPAGE"] = "ANSI_1251"
+    # Масштаб линий для штриховых — 25 (LTSCALE)
+    try:
+        doc.header["$LTSCALE"] = 25.0
+        doc.header["$CELTSCALE"] = 1.0
+    except Exception:
+        pass
 
     # 2. Создание слоёв 'Окна' и 'Штриховые' (для контура проёма)
     layer_name = "Окна"
@@ -767,15 +808,16 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
     layer_opening = "Штриховые"
     if layer_opening not in doc.layers:
         try:
-            # Штриховая линия для проёма
+            # Штриховая линия для проёма, масштаб 25
             doc.layers.add(layer_opening, color=1, linetype="DASHED")
         except Exception:
             try:
                 doc.layers.add(layer_opening, color=1)
-                # попытаться назначить тип линии
                 doc.layers.get(layer_opening).dxf.linetype = "DASHED"
             except Exception:
                 doc.layers.add(layer_opening, color=1)
+    # Установить масштаб линий для слоя Штриховые — 25 (через CELTSCALE у примитивов)
+    # Глобальный LTSCALE уже 25, дополнительно для каждого примитива на этом слое ставим ltscale 25
 
     # 2b. Создание текстового стиля WindowStyle с Arial.ttf (ТЗ 0.2)
     style_name = "WindowStyle"
@@ -797,12 +839,16 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
     # 3. Создание определения блока
     blk = doc.blocks.new(model["block_name"])
 
-    # 4. Добавление габаритного контура проёма (ТЗ 0.2 обязателен) - LWPOLYLINE 0,0 .. OW,OH на слое Штриховые
-    blk.add_lwpolyline(
+    # 4. Добавление габаритного контура проёма (ТЗ 0.2 обязателен) - LWPOLYLINE 0,0 .. OW,OH на слое Штриховые, масштаб 25
+    ent_opening = blk.add_lwpolyline(
         model["opening_poly"],
         close=True,
         dxfattribs={"layer": layer_opening},
     )
+    try:
+        ent_opening.dxf.linetype_scale = 25.0
+    except Exception:
+        pass
 
     # 5. Добавление рамы (наружный и внутренний контуры)
     # Для вида изнутри створка (с учётом наплава) обрезает контуры рам и импостов
@@ -919,9 +965,13 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
         # Для OUTSIDE стыки всё равно нужны, т.к. они видны как часть бруска
         for p1, p2 in sash.get("mitres", []):
             blk.add_line(p1, p2, dxfattribs={"layer": layer_name})
-        # Линии открывания по ГОСТ — всегда, но по доработке на слое Штриховые
+        # Линии открывания по ГОСТ — всегда, но по доработке на слое Штриховые, масштаб 25
         for p1, p2 in sash.get("indicators", []):
-            blk.add_line(p1, p2, dxfattribs={"layer": layer_opening})
+            ent_ind = blk.add_line(p1, p2, dxfattribs={"layer": layer_opening})
+            try:
+                ent_ind.dxf.linetype_scale = 25.0
+            except Exception:
+                pass
         # Совместимость: если в модели только старый contour без деления
         if not sash.get("outer_contour") and sash.get("contour"):
             # Для OUTSIDE старый контур считаем наружным и скрываем
@@ -938,18 +988,55 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
     # Атрибуты: OBJECT / WINDOW(ОК-1/1 шт.) / COLOR(RAL8017/RAL9016) / GLAZING(Заполнение СПД42) / SIZE(1500х1500) / GRID(3х2)
     oh = model["opening"]["height"]
     ow = model["opening"]["width"]
-    # Слой для размеров и площади
+    # Слой для размеров — Размеры, стиль — Основной (увеличенные габариты)
     layer_dim = "Размеры"
-    # Пользователь указал "слой размера Основной" — создаём Основной если нужен, но используем Размеры как основной для размеров
-    # Создадим оба для совместимости
-    for ln, col in [("Размеры", 3), ("Основной", 7)]:
-        if ln not in doc.layers:
+    dim_layer = "Размеры"
+    dim_style_name = "Основной"
+    if dim_layer not in doc.layers:
+        try:
+            doc.layers.add(dim_layer, color=3)
+        except Exception:
+            pass
+    # Также создаём слой Основной для совместимости (не используется для размеров)
+    if "Основной" not in doc.layers:
+        try:
+            doc.layers.add("Основной", color=7)
+        except Exception:
+            pass
+    # Создаём размерный стиль Основной и увеличиваем габариты
+    if dim_style_name not in doc.dimstyles:
+        try:
+            # Попытка скопировать из EZDXF
             try:
-                doc.layers.add(ln, color=col)
+                base = doc.dimstyles.get("EZDXF")
+                ds_new = doc.dimstyles.new(dim_style_name)
+                # Копируем некоторые атрибуты если возможно
+                for attr in ("dimtxt", "dimasz", "dimexe", "dimexo", "dimgap", "dimscale"):
+                    try:
+                        setattr(ds_new.dxf, attr, getattr(base.dxf, attr))
+                    except Exception:
+                        pass
             except Exception:
-                pass
-    # Используем Основной как слой для размеров если существует, иначе Размеры
-    dim_layer = "Основной" if "Основной" in doc.layers else layer_dim
+                doc.dimstyles.new(dim_style_name)
+        except Exception:
+            pass
+    try:
+        ds = doc.dimstyles.get(dim_style_name)
+        # Увеличенные габариты размеров (в 2 раза крупнее)
+        ds.dxf.dimtxt = 7.0  # высота текста (было 2.5)
+        ds.dxf.dimasz = 5.0  # размер стрелок
+        ds.dxf.dimexe = 2.5
+        ds.dxf.dimexo = 2.0
+        ds.dxf.dimgap = 2.5
+        ds.dxf.dimscale = 2.5  # общий масштаб
+        ds.dxf.dimexe = 3.0
+        # Шрифт для размеров — WindowStyle (Arial)
+        try:
+            ds.dxf.dimtxsty = style_name
+        except Exception:
+            pass
+    except Exception:
+        pass
     # Атрибуты — выше окна, по левому углу (x=0)
     x_attr = 0.0  # левый угол проёма
     y_attr_start = float(oh) + 50.0  # 50 выше проёма, чтобы не наезжать на раму
@@ -990,49 +1077,44 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
     except Exception:
         pass
 
-    # 10c. Размерные цепочки справа и снизу (и слева аналогично)
-    # Слой для размеров — Основной (или Размеры), стиль — тот же WindowStyle или Standard
+    # 10c. Размерные цепочки справа и снизу (вертикальные только справа)
+    # Слой — Размеры, стиль — Основной, увеличенные габариты
     try:
         s = float(model["opening"]["seam"])
         fw = float(model["params"]["frame"]["face_width"])
-        fh = float(model["params"]["frame"]["face_height"])
         cols = int(model["grid"]["cols"])
         rows = int(model["grid"]["rows"])
         cell_w = float(model["grid"]["cell_w"])
         cell_h = float(model["grid"]["cell_h"])
         mw = float(model["params"].get("mullion", {}).get("width", 0))
         mh = float(model["params"].get("mullion", {}).get("height", 0))
-        # Определяем координаты рамы (с учётом подставочника)
-        # frame_outer уже учитывает sill: bottom = S+SH
-        frame_left = float(model["frame_outer"][0][0])  # S
-        frame_right = float(model["frame_outer"][1][0])  # OW-S
-        frame_bottom = float(model["frame_outer"][0][1])  # S или S+SH
-        frame_top = float(model["frame_outer"][3][1])  # OH-S
-        # Центры вертикальных импостов
-        x0 = s + fw
-        # y0 учитывает sill
-        sill_on = bool(model["params"].get("sill", {}).get("on", False))
-        sh = float(model["params"].get("sill", {}).get("height", 30)) if sill_on else 0.0
-        y0 = (s + sh + fh) if sill_on else (s + fh)
+        # Рама с учётом зеркала: берём min/max
+        xs = [p[0] for p in model["frame_outer"]]
+        ys = [p[1] for p in model["frame_outer"]]
+        frame_left = float(min(xs))
+        frame_right = float(max(xs))
+        frame_bottom = float(min(ys))
+        frame_top = float(max(ys))
+        # Центры импостов — из модели (уже зеркалены если INSIDE)
         vert_centers: list[float] = []
-        for i in range(1, cols):
-            x = x0 + i * cell_w + (i - 1) * mw
-            vert_centers.append(x + mw / 2.0)
+        for poly in model.get("mullions_v", []):
+            # центр вертикального импоста по X
+            xs_m = [p[0] for p in poly]
+            vert_centers.append((min(xs_m) + max(xs_m)) / 2.0)
+        vert_centers.sort()
         horiz_centers: list[float] = []
-        for j in range(1, rows):
-            y = y0 + j * cell_h + (j - 1) * mh
-            horiz_centers.append(y + mh / 2.0)
+        for poly in model.get("mullions_h", []):
+            ys_m = [p[1] for p in poly]
+            horiz_centers.append((min(ys_m) + max(ys_m)) / 2.0)
+        horiz_centers.sort()
 
-        # Вспомогательная функция для добавления линейного размера
         def _add_dim(p1, p2, base, angle=0):
             try:
-                # angle 0 - горизонтальный (измеряет по X), 90 - вертикальный (по Y)
-                dim = blk.add_linear_dim(base=base, p1=p1, p2=p2, angle=angle, dimstyle="EZDXF")
+                dim = blk.add_linear_dim(base=base, p1=p1, p2=p2, angle=angle, dimstyle=dim_style_name)
                 try:
                     dim.render()
                 except Exception:
                     pass
-                # Установить слой
                 try:
                     dim.dimension.dxf.layer = dim_layer
                 except Exception:
@@ -1040,68 +1122,47 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
                         dim.dxf.layer = dim_layer
                     except Exception:
                         pass
+                # Установить масштаб линий 25 для штриховых? Для размеров не нужно, но увеличим
+                try:
+                    dim.dimension.dxf.linetype_scale = 1.0
+                except Exception:
+                    pass
                 return dim
-            except Exception as e:
-                # fallback: просто линия с текстом
+            except Exception:
                 try:
                     blk.add_line(p1, p2, dxfattribs={"layer": dim_layer})
                 except Exception:
                     pass
                 return None
 
-        # Горизонтальные размеры снизу
-        # Уровни: детальная цепочка y=-30, габарит окна y=-60, габарит проёма y=-90
-        # Для каждой цепочки base y - offset, p1/p2 y = 0 (уровень проёма) или frame_bottom?
-        # Используем Y=0 для проёма, frame_bottom для окна, но для простоты ставим Y=0 для всех p1/p2
-        # Extension lines будут вертикальными, dimension line горизонтальная
-        # Детальная цепочка: от края рамы до середины импоста и т.д.
+        # Горизонтальные снизу: детальная (от края рамы до середины импоста...), габарит окна, габарит проёма
+        # Увеличенные отступы: 40, 80, 120 (было 30,60,90) — крупнее
         horiz_points = [frame_left] + vert_centers + [frame_right]
-        # Детальная цепочка (сегменты)
-        base_y_detailed = -30.0
+        base_y_detailed = -40.0
         for i in range(len(horiz_points) - 1):
-            x_a = horiz_points[i]
-            x_b = horiz_points[i + 1]
-            # пропускаем нулевую длину
+            x_a, x_b = horiz_points[i], horiz_points[i+1]
             if abs(x_b - x_a) < 1e-6:
                 continue
             _add_dim(p1=(x_a, 0), p2=(x_b, 0), base=(0, base_y_detailed), angle=0)
-        # Габарит окна (от левого края рамы до правого)
-        base_y_window = -60.0
+        base_y_window = -80.0
         _add_dim(p1=(frame_left, 0), p2=(frame_right, 0), base=(0, base_y_window), angle=0)
-        # Габарит проёма (от 0 до OW)
-        base_y_opening = -90.0
+        base_y_opening = -120.0
         _add_dim(p1=(0, 0), p2=(float(ow), 0), base=(0, base_y_opening), angle=0)
 
-        # Вертикальные размеры справа
-        # Уровни: детальная x=OW+30, окно x=OW+60, проём x=OW+90
+        # Вертикальные только справа (увеличенные отступы 40,80,120)
         vert_points = [frame_bottom] + horiz_centers + [frame_top]
-        base_x_detailed_r = float(ow) + 30.0
+        base_x_detailed_r = float(ow) + 40.0
         for i in range(len(vert_points) - 1):
-            y_a = vert_points[i]
-            y_b = vert_points[i + 1]
+            y_a, y_b = vert_points[i], vert_points[i+1]
             if abs(y_b - y_a) < 1e-6:
                 continue
             _add_dim(p1=(0, y_a), p2=(0, y_b), base=(base_x_detailed_r, 0), angle=90)
-        base_x_window_r = float(ow) + 60.0
+        base_x_window_r = float(ow) + 80.0
         _add_dim(p1=(0, frame_bottom), p2=(0, frame_top), base=(base_x_window_r, 0), angle=90)
-        base_x_opening_r = float(ow) + 90.0
+        base_x_opening_r = float(ow) + 120.0
         _add_dim(p1=(0, 0), p2=(0, float(oh)), base=(base_x_opening_r, 0), angle=90)
 
-        # Вертикальные размеры слева (аналогично справа, зеркально)
-        base_x_detailed_l = -30.0
-        for i in range(len(vert_points) - 1):
-            y_a = vert_points[i]
-            y_b = vert_points[i + 1]
-            if abs(y_b - y_a) < 1e-6:
-                continue
-            _add_dim(p1=(0, y_a), p2=(0, y_b), base=(base_x_detailed_l, 0), angle=90)
-        base_x_window_l = -60.0
-        _add_dim(p1=(0, frame_bottom), p2=(0, frame_top), base=(base_x_window_l, 0), angle=90)
-        base_x_opening_l = -90.0
-        _add_dim(p1=(0, 0), p2=(0, float(oh)), base=(base_x_opening_l, 0), angle=90)
-
     except Exception as e:
-        # Не критично для экспорта
         print(f"  Предупреждение: не удалось создать размерные цепочки: {e}")
 
     # 11. Вставка BlockReference в пространство модели (ModelSpace) в точке (0, 0)
@@ -1309,8 +1370,14 @@ def main(argv: list[str] | None = None) -> int:
         import traceback; traceback.print_exc()
         return 1
 
-    # Опциональная конвертация в DWG
-    convert_to_dwg(out_dxf_path)
+    # Опциональная конвертация в DWG — после успеха удалять DXF
+    dwg_res = convert_to_dwg(out_dxf_path)
+    if dwg_res and Path(dwg_res).is_file():
+        try:
+            Path(out_dxf_path).unlink()
+            print(f"  DXF удалён после конвертации (остался DWG): {dwg_res}")
+        except Exception as e:
+            print(f"  Не удалось удалить DXF {out_dxf_path}: {e}")
 
     # Дополнительно: вид изнутри для отработки ошибок (если основной OUTSIDE)
     try:
@@ -1319,12 +1386,17 @@ def main(argv: list[str] | None = None) -> int:
             inside_params = copy.deepcopy(params)
             inside_params["view"] = "INSIDE"
             inside_model = build_window_model(inside_params)
-            # Имя файла с суффиксом _INSIDE (для отработки)
             inside_path = out_dxf_path.parent / f"{inside_model['window_name']}_INSIDE.dxf"
             export_to_dxf(inside_model, inside_path)
             isize = inside_path.stat().st_size / 1024.0
             print(f"  Вид изнутри (для отработки): ./{inside_path.as_posix()} ({isize:.1f} KB)")
-            convert_to_dwg(inside_path)
+            dwg_inside = convert_to_dwg(inside_path)
+            if dwg_inside and Path(dwg_inside).is_file():
+                try:
+                    Path(inside_path).unlink()
+                    print(f"  DXF изнутри удалён после конвертации (остался DWG): {dwg_inside}")
+                except Exception as e:
+                    print(f"  Не удалось удалить DXF {inside_path}: {e}")
     except Exception as e:
         print(f"  Не удалось сформировать вид изнутри: {e}")
 
