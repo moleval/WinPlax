@@ -750,16 +750,36 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
 
 
 def find_oda() -> str | None:
-    """Поиск установленного ODA File Converter в стандартных путях и PATH."""
-    oda_paths = [
+    """Поиск установленного ODA File Converter в стандартных путях и PATH (поддержка winget, любые версии)."""
+    import glob as _glob
+    # Статичные пути + glob для любых версий (включая winget 27.1)
+    oda_patterns = [
         r"C:\Program Files\ODA\ODAFileConverter\ODAFileConverter.exe",
-        r"C:\Program Files\ODA\ODAFileConverter 25.4.0\ODAFileConverter.exe",
-        r"C:\Program Files\ODA\ODAFileConverter 24.12.0\ODAFileConverter.exe",
+        r"C:\Program Files\ODA\ODAFileConverter*\ODAFileConverter.exe",
+        r"C:\Program Files\ODA\*\ODAFileConverter.exe",
         r"C:\Program Files (x86)\ODA\ODAFileConverter\ODAFileConverter.exe",
+        r"C:\Program Files (x86)\ODA\ODAFileConverter*\ODAFileConverter.exe",
     ]
-    for p in oda_paths:
-        if os.path.exists(p):
-            return p
+    for pat in oda_patterns:
+        # если без wildcards — просто проверить
+        if "*" not in pat:
+            if os.path.exists(pat):
+                return pat
+        else:
+            for cand in _glob.glob(pat):
+                if os.path.isfile(cand):
+                    return cand
+
+    # Также проверить winget Packages (иногда ставит туда)
+    winget_glob = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages\ODA.ODAFileConverter*\*")
+    for cand in _glob.glob(winget_glob):
+        # искать exe внутри
+        for exe in _glob.glob(os.path.join(cand, "ODAFileConverter.exe")):
+            if os.path.isfile(exe):
+                return exe
+        for exe in _glob.glob(os.path.join(cand, "**", "ODAFileConverter.exe"), recursive=True):
+            if os.path.isfile(exe):
+                return exe
 
     for name in ("ODAFileConverter", "odafileconverter"):
         found = shutil.which(name)
