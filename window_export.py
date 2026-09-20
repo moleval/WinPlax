@@ -804,11 +804,13 @@ def convert_to_dwg(dxf_path: str | Path) -> str | None:
     dxf_file = Path(dxf_path).resolve()
     out_dir = dxf_file.parent
 
+    # Доработка: для совместимости с AutoCAD 2016/2023 используем ACAD2013 (R2013, AC1027)
+    # ACAD2018 (R2018) не читается в 2016 (макс. R2013), а DXF у нас R2013 — оставляем единый формат 2013
     cmd = [
         oda,
         str(out_dir),
         str(out_dir),
-        "ACAD2018",
+        "ACAD2013",
         "DWG",
         "0",
         "1",
