@@ -167,6 +167,20 @@ def _copy_template_tables(doc, template_path: str | Path):
             info["header"]["$LTSCALE"] = tpl.header["$LTSCALE"]
     except Exception:
         pass
+    # Копируем блоки-стрелки для размерных стилей (_DotSmall и т.п.), иначе ошибка Block does not exist при сохранении
+    try:
+        from ezdxf.addons import Importer
+        arrow_blocks = [b.name for b in tpl.blocks if b.name.startswith("_")]
+        # также блоки типа *D* — не нужны, но для полноты можно, но пропустим анонимные *D
+        to_import = [n for n in arrow_blocks if n not in doc.blocks]
+        if to_import:
+            imp = Importer(tpl, doc)
+            imp.import_blocks(to_import)
+            imp.finalize()
+            if to_import:
+                print(f"    Блоки стрелок скопированы: {', '.join(to_import)}")
+    except Exception as e_blocks:
+        print(f"  Предупреждение: не удалось скопировать блоки стрелок: {e_blocks}")
     print(f"  Шаблон {tpl_path.name}: скопировано слоёв {len(info['layers'])}, стилей {len(info['styles'])}, размерных {len(info['dimstyles'])}")
     if info["layers"]:
         print(f"    Слои: " + ", ".join([f"{n}({c}/{lt})" for n,c,lt,_ in info["layers"][:8]]) + (" ..." if len(info["layers"])>8 else ""))
@@ -1111,12 +1125,9 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
                 doc.encoding = "cp1251"
             except Exception:
                 pass
-            # Если в шаблоне свой LTSCALE, он уже скопирован; если нет — ставим 25
-            try:
-                if "$LTSCALE" not in tpl_doc.header or tpl_doc.header.get("$LTSCALE", 0) == 1.0:
-                    doc.header["$LTSCALE"] = 25.0
-            except Exception:
-                pass
+            # Если в шаблоне свой LTSCALE, он уже скопирован и сохраняется как есть (по ТЗ: считать все настройки заголовка)
+            # Ставим 25 только если в шаблоне нет LTSCALE (нет шаблона) — уже обработано в ветках else
+            pass
         except Exception as e:
             print(f"  Не удалось использовать шаблон как основу: {e} — создаём с нуля")
             doc = ezdxf.new("R2013")
