@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Window Block Export (WinPlax Prototype)
-Версия: 0.1
+Window Block Export (WinPlax)
+Версия: 0.2 (Скорректированная по итогам тестирования v0.1)
 Назначение: Формирование параметрической модели окна и экспорт в DXF/DWG блок без использования AutoCAD.
+Соответствует ТЗ 0.2: ГОСТ 21.501 / 23166, проём, рама 45°, створки двухконтурные 80 мм, ГОСТ-стрелки, атрибуты Arial 18 мм.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import shutil
@@ -173,6 +175,19 @@ def validate(params: dict[str, Any]) -> list[str]:
     if so < 0:
         errors.append("Наплав створки (sash.overlap) должен быть >= 0")
 
+    # 12. Ширина бруска створки (profile_width) по ТЗ 0.2
+    pw = sash.get("profile_width", 80)
+    if pw is not None:
+        try:
+            pw_f = float(pw)
+            if pw_f < 0:
+                errors.append("Ширина бруска створки (sash.profile_width) должна быть >= 0")
+            elif pw_f == 0:
+                # 0 допустимо только для FIX? но лучше требовать >0 если есть створки
+                pass
+        except (TypeError, ValueError):
+            errors.append("Ширина бруска створки (sash.profile_width) должна быть числом")
+
     return errors
 
 
@@ -196,6 +211,19 @@ def calc_strips_y(y0: float, cell_h: float, mh: float, rows: int) -> list[tuple[
     return strips
 
 
+def calc_opening(ow: float, oh: float) -> list[tuple[float, float]]:
+    """
+    Расчёт габаритного контура проёма в стене.
+    По ТЗ 0.2: прямоугольник (0,0) .. (OW, OH)
+    """
+    return [
+        (0.0, 0.0),
+        (float(ow), 0.0),
+        (float(ow), float(oh)),
+        (0.0, float(oh)),
+    ]
+
+
 def calc_frame(ow: float, oh: float, s: float, fw: float, fh: float) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
     """
     Расчёт внешнего и внутреннего контуров рамы окна.
@@ -217,21 +245,45 @@ def calc_frame(ow: float, oh: float, s: float, fw: float, fh: float) -> tuple[li
     return frame_outer, frame_inner
 
 
+def calc_frame_mitres(ow: float, oh: float, s: float, fw: float, fh: float) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """
+    Расчёт косых стыков коробки рамы под 45° (4 диагонали между внешним и внутренним углами).
+    По ТЗ 0.2 п.3.3:
+      Левый нижний: (S,S) -> (S+FW, S+FH)
+      Правый нижний: (OW-S,S) -> (OW-S-FW, S+FH)
+      Правый верхний: (OW-S,OH-S) -> (OW-S-FW, OH-S-FH)
+      Левый верхний: (S,OH-S) -> (S+FW, OH-S-FH)
+    """
+    return [
+        ((s, s), (s + fw, s + fh)),
+        ((ow - s, s), (ow - s - fw, s + fh)),
+        ((ow - s, oh - s), (ow - s - fw, oh - s - fh)),
+        ((s, oh - s), (s + fw, oh - s - fh)),
+    ]
+
+
 def calc_sill(params: dict[str, Any], ow: float, s: float) -> list[tuple[float, float]] | None:
     """
     Расчёт контура подставочного профиля (LWPOLYLINE прямоугольник).
-    Располагается под нижним бруском рамы: от y = S - SH до y = S.
+    Доработка по замечанию: профиль съехал в отрицательную Y, правильно:
+      без подставочника: рама с y=S (30)
+      с подставочником: sill  y=S .. S+SH (30..60), рама с y=S+SH (60)
+    Т.е. зазор S между проёмом (y=0) и низом подставочника (y=S), высота SH, рама над ним.
+    Прямоугольник: [(S, S), (OW-S, S), (OW-S, S+SH), (S, S+SH)]  при sill.on
+    (Ранее ошибочно было ниже 0)
     """
     sill_cfg = params.get("sill", {})
     if not sill_cfg.get("on", False):
         return None
 
     sh = float(sill_cfg.get("height", 30))
+    sill_bottom = float(s)
+    sill_top = sill_bottom + sh
     return [
-        (s, s - sh),
-        (ow - s, s - sh),
-        (ow - s, s),
-        (s, s),
+        (s, sill_bottom),
+        (ow - s, sill_bottom),
+        (ow - s, sill_top),
+        (s, sill_top),
     ]
 
 
@@ -269,11 +321,28 @@ def calc_cells(
     return cells
 
 
-def calc_sashes(cells: list[dict[str, Any]], overlap: float) -> list[dict[str, Any]]:
+def calc_sashes(
+    cells: list[dict[str, Any]],
+    overlap: float,
+    profile_width: float = 80.0,
+) -> list[dict[str, Any]]:
     """
-    Расчёт примитивов для створок:
-    - Контур створки (4 линии с учётом наплава SO)
-    - Дополнительные линии для индикации открывания (TILT, TURN_TILT)
+    Расчёт примитивов для створок по ТЗ 0.2.
+
+    Для каждой ячейки с sash_type != FIX:
+      - Наружный контур: [(x1-SO,y1-SO) .. (x2+SO,y2+SO)]
+      - Внутренний контур (брусок SW): [(x1-SO+SW, y1-SO+SW) .. (x2+SO-SW, y2+SO-SW)]
+      - 4 диагональных стыка под 45° между наружным и внутренним углами
+      - Линии открывания по ГОСТ 21.501 / 23166 по световому проёму створки [in_x1,in_x2] x [in_y1,in_y2]:
+          TURN:  две линии из углов стороны петель к центру ручки: (in_x1,in_y1)->(in_x2,ymid) и (in_x1,in_y2)->(in_x2,ymid)
+          TILT:  две линии из нижних углов к центру верхней ручки: (in_x1,in_y1)->(xmid,in_y2) и (in_x2,in_y1)->(xmid,in_y2)
+          TURN_TILT: совмещение TURN + TILT (4 линии)
+          FIX: линий нет
+
+    Сохраняет совместимость со старым API calc_sashes(cells, overlap) -> profile_width по умолчанию 80.
+    Возвращает список словарей с ключами:
+      cell, sash_type, outer_contour, inner_contour, mitres, indicators,
+      а также для совместимости contour (=outer_contour)
     """
     sashes: list[dict[str, Any]] = []
     for cell in cells:
@@ -281,38 +350,164 @@ def calc_sashes(cells: list[dict[str, Any]], overlap: float) -> list[dict[str, A
         if stype == "FIX":
             continue
 
-        x1 = cell["x1"] - overlap
-        y1 = cell["y1"] - overlap
-        x2 = cell["x2"] + overlap
-        y2 = cell["y2"] + overlap
+        x1 = float(cell["x1"]) - float(overlap)
+        y1 = float(cell["y1"]) - float(overlap)
+        x2 = float(cell["x2"]) + float(overlap)
+        y2 = float(cell["y2"]) + float(overlap)
 
-        # 4 линии внешнего контура створки
-        contour = [
+        sw = float(profile_width)
+
+        # Наружный контур створки (4 линии)
+        outer_contour: list[tuple[tuple[float, float], tuple[float, float]]] = [
             ((x1, y1), (x2, y1)),
             ((x2, y1), (x2, y2)),
             ((x2, y2), (x1, y2)),
             ((x1, y2), (x1, y1)),
         ]
 
-        # Линии индикации открывания
-        indicators: list[tuple[tuple[float, float], tuple[float, float]]] = []
-        if stype == "TILT":
-            # Диагональная линия откидывания
-            indicators.append(((x1, y1), (x2, y2)))
-        elif stype == "TURN_TILT":
-            # Поворотно-откидная: средняя горизонталь + 2 наклонные линии
-            y_mid = (y1 + y2) / 2.0
-            indicators.append(((x1, y_mid), (x2, y_mid)))
-            indicators.append(((x1, y1), (x2, y_mid)))
-            indicators.append(((x1, y_mid), (x2, y2)))
+        # Внутренний контур (световой проём стеклопакета) с отступом SW
+        in_x1 = x1 + sw
+        in_y1 = y1 + sw
+        in_x2 = x2 - sw
+        in_y2 = y2 - sw
+
+        # Защита от вырожденного контура (если SW слишком велик) - не валидируем жестко, но пропускаем если вырожден
+        if in_x2 <= in_x1 or in_y2 <= in_y1:
+            # Тогда внутренний контур вырожден - пропускаем створку как ошибку геометрии, но лучше создать пустой?
+            # Для совместимости оставим inner_contour пустым, но mitres и indicators тоже пустые
+            inner_contour: list[tuple[tuple[float, float], tuple[float, float]]] = []
+            mitres: list[tuple[tuple[float, float], tuple[float, float]]] = []
+            indicators: list[tuple[tuple[float, float], tuple[float, float]]] = []
+        else:
+            inner_contour = [
+                ((in_x1, in_y1), (in_x2, in_y1)),
+                ((in_x2, in_y1), (in_x2, in_y2)),
+                ((in_x2, in_y2), (in_x1, in_y2)),
+                ((in_x1, in_y2), (in_x1, in_y1)),
+            ]
+
+            # 4 диагональных стыка под 45° в углах створки (между наружным и внутренним углами)
+            mitres = [
+                ((x1, y1), (in_x1, in_y1)),  # левый нижний
+                ((x2, y1), (in_x2, in_y1)),  # правый нижний
+                ((x2, y2), (in_x2, in_y2)),  # правый верхний
+                ((x1, y2), (in_x1, in_y2)),  # левый верхний
+            ]
+
+            # Линии открывания по ГОСТ (по световому проёму)
+            indicators = []
+            y_mid = (in_y1 + in_y2) / 2.0
+            x_mid = (in_x1 + in_x2) / 2.0
+
+            if stype == "TURN":
+                # Поворотная: две линии из углов стороны петель (левой) к центру ручки на противоположной (правой) стороне
+                indicators.append(((in_x1, in_y1), (in_x2, y_mid)))
+                indicators.append(((in_x1, in_y2), (in_x2, y_mid)))
+            elif stype == "TILT":
+                # Откидная/фрамуга: две линии из нижних углов к центру верхней ручки
+                indicators.append(((in_x1, in_y1), (x_mid, in_y2)))
+                indicators.append(((in_x2, in_y1), (x_mid, in_y2)))
+            elif stype == "TURN_TILT":
+                # Поворотно-откидная: совмещение TURN + TILT = 4 линии
+                indicators.append(((in_x1, in_y1), (in_x2, y_mid)))
+                indicators.append(((in_x1, in_y2), (in_x2, y_mid)))
+                indicators.append(((in_x1, in_y1), (x_mid, in_y2)))
+                indicators.append(((in_x2, in_y1), (x_mid, in_y2)))
+            else:
+                # FIX уже отфильтрован, но для безопасности
+                indicators = []
 
         sashes.append({
             "cell": (cell["row"], cell["col"]),
             "sash_type": stype,
-            "contour": contour,
+            "contour": outer_contour,  # совместимость с v0.1 (outer)
+            "outer_contour": outer_contour,
+            "inner_contour": inner_contour,
+            "mitres": mitres,
             "indicators": indicators,
+            # для удобства храним координаты
+            "outer_rect": (x1, y1, x2, y2),
+            "inner_rect": (in_x1, in_y1, in_x2, in_y2) if 'in_x1' in locals() else None,
         })
     return sashes
+
+
+def _subtract_rect_from_line(
+    x0: float, y0: float, x1: float, y1: float,
+    rx1: float, ry1: float, rx2: float, ry2: float,
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """
+    Вычитание прямоугольника из линии: возвращает отрезки линии вне прямоугольника.
+    Для вида изнутри: створка обрезает раму/импост.
+    Если линия полностью вне — возвращает исходную, если внутри — [], если пересекает — 1-2 отрезка.
+    """
+    # Нормализуем прямоугольник
+    xmin, xmax = (rx1, rx2) if rx1 < rx2 else (rx2, rx1)
+    ymin, ymax = (ry1, ry2) if ry1 < ry2 else (ry2, ry1)
+    # Проверка: линия полностью вне по bbox
+    # Используем клип чтобы найти внутри часть
+    clipped = _clip_line_to_rect(x0, y0, x1, y1, xmin, ymin, xmax, ymax)
+    if clipped is None:
+        # полностью вне — остаётся
+        return [((x0, y0), (x1, y1))]
+    (cx0, cy0), (cx1, cy1) = clipped
+    # Если clipped совпадает с исходной — полностью внутри
+    if abs(cx0 - x0) < 1e-9 and abs(cy0 - y0) < 1e-9 and abs(cx1 - x1) < 1e-9 and abs(cy1 - y1) < 1e-9:
+        return []
+    # Если clipped - точка, линия касается — считаем как вне?
+    # Разбиваем на до и после
+    res: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    # Отрезок до входа
+    if abs(cx0 - x0) > 1e-9 or abs(cy0 - y0) > 1e-9:
+        res.append(((x0, y0), (cx0, cy0)))
+    # Отрезок после выхода
+    if abs(cx1 - x1) > 1e-9 or abs(cy1 - y1) > 1e-9:
+        res.append(((cx1, cy1), (x1, y1)))
+    return res
+
+
+def _clip_line_to_rect(
+    x0: float, y0: float, x1: float, y1: float,
+    rx1: float, ry1: float, rx2: float, ry2: float,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """
+    Клип линии к прямоугольнику (rx1,ry1)-(rx2,ry2) по Liang-Barsky.
+    Возвращает обрезанный отрезок внутри прямоугольника или None если вне.
+    Используется для вида снаружи: рама/импост обрезают створку и засечки.
+    """
+    # Нормализуем прямоугольник
+    xmin = min(rx1, rx2)
+    xmax = max(rx1, rx2)
+    ymin = min(ry1, ry2)
+    ymax = max(ry1, ry2)
+    dx = x1 - x0
+    dy = y1 - y0
+    p = [-dx, dx, -dy, dy]
+    q = [x0 - xmin, xmax - x0, y0 - ymin, ymax - y0]
+    u1, u2 = 0.0, 1.0
+    for pi, qi in zip(p, q):
+        if pi == 0:
+            if qi < 0:
+                return None
+        else:
+            t = qi / pi if pi != 0 else 0
+            # pi <0 -> entering, pi>0 -> leaving
+            if pi < 0:
+                if t > u1:
+                    u1 = t
+            else:
+                if t < u2:
+                    u2 = t
+            if u1 > u2:
+                return None
+    if u1 > 1 or u2 < 0:
+        return None
+    # Обрезанные точки
+    nx0 = x0 + u1 * dx
+    ny0 = y0 + u1 * dy
+    nx1 = x0 + u2 * dx
+    ny1 = y0 + u2 * dy
+    return ((nx0, ny0), (nx1, ny1))
 
 
 def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
@@ -336,15 +531,48 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     rows = int(params["rows"])
 
     so = float(params.get("sash", {}).get("overlap", 15))
+    sw = float(params.get("sash", {}).get("profile_width", 80))
+
     window_name = str(params.get("window_name") or params.get("metadata", {}).get("window_name", "ОК-1")).strip()
 
-    # 1. Расчёт рамы
-    frame_outer, frame_inner = calc_frame(ow, oh, s, fw, fh)
+    # Доработка: подставочник с зазором S — рама сдвигается вверх
+    sill_cfg_tmp = params.get("sill", {})
+    sill_on_tmp = bool(sill_cfg_tmp.get("on", False))
+    sh_tmp = float(sill_cfg_tmp.get("height", 30)) if sill_on_tmp else 0.0
 
-    # 2. Границы внутренней световой сетки
+    # 0. Габаритный контур проёма (ТЗ 0.2 обязателен)
+    opening_poly = calc_opening(ow, oh)
+
+    # 1. Расчёт рамы с учётом подставочника (доработка: 0-рамка 30-подставочник 60-рама)
+    if sill_on_tmp:
+        # С подставочником: низ рамы на S+SH (60), верх как обычно OH-S
+        frame_outer = [
+            (s, s + sh_tmp),
+            (ow - s, s + sh_tmp),
+            (ow - s, oh - s),
+            (s, oh - s),
+        ]
+        frame_inner = [
+            (s + fw, s + sh_tmp + fh),
+            (ow - s - fw, s + sh_tmp + fh),
+            (ow - s - fw, oh - s - fh),
+            (s + fw, oh - s - fh),
+        ]
+        # 45° стыки с учётом сдвига низа
+        frame_mitres = [
+            ((s, s + sh_tmp), (s + fw, s + sh_tmp + fh)),  # левый нижний
+            ((ow - s, s + sh_tmp), (ow - s - fw, s + sh_tmp + fh)),  # правый нижний
+            ((ow - s, oh - s), (ow - s - fw, oh - s - fh)),  # правый верхний
+            ((s, oh - s), (s + fw, oh - s - fh)),  # левый верхний
+        ]
+    else:
+        frame_outer, frame_inner = calc_frame(ow, oh, s, fw, fh)
+        frame_mitres = calc_frame_mitres(ow, oh, s, fw, fh)
+
+    # 2. Границы внутренней световой сетки (с учётом подставочника)
     x0 = s + fw
     x1 = ow - s - fw
-    y0 = s + fh
+    y0 = (s + sh_tmp + fh) if sill_on_tmp else (s + fh)
     y1 = oh - s - fh
 
     grid_w = x1 - x0
@@ -390,36 +618,152 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
             (x0, y + mh),
         ])
 
-    # 6. Створки
-    sashes = calc_sashes(cells, so)
+    # 6. Створки (двухконтурные + ГОСТ-стрелки)
+    sashes = calc_sashes(cells, so, sw)
 
-    # 7. Подставочный профиль
+    # 6b. Доработка: для вида снаружи рама/импосты обрезают створку и косые засечки
+    # Т.е. видимая часть створки ограничена ячейкой (cell), наружный контур и 45° засечки
+    # обрезаются по границе ячейки (которая совпадает с внутр. гранью рамы/импоста)
+    view_tmp = str(params.get("view", "OUTSIDE")).upper()
+    if view_tmp == "OUTSIDE":
+        for sash in sashes:
+            # Найти ячейку створки
+            cell = next((c for c in cells if (c["row"], c["col"]) == tuple(sash["cell"])), None)
+            if cell is None:
+                continue
+            rx1, ry1, rx2, ry2 = cell["x1"], cell["y1"], cell["x2"], cell["y2"]
+            # Обрезаем 45° засечки к ячейке
+            new_mitres: list[tuple[tuple[float, float], tuple[float, float]]] = []
+            for (x0, y0), (x1, y1) in sash.get("mitres", []):
+                clipped = _clip_line_to_rect(x0, y0, x1, y1, rx1, ry1, rx2, ry2)
+                if clipped is not None:
+                    new_mitres.append(clipped)
+                else:
+                    pass
+            sash["mitres"] = new_mitres
+
+    # 6c. Зеркальность: вид снаружи и изнутри зеркальны по вертикальной оси (сейчас нет)
+    # При виде изнутри окно зеркалится относительно вертикальной оси проёма (X -> OW - X)
+    # Атрибуты, размеры и т.п. не зеркалятся, только геометрия окна
+    if str(params.get("view", "OUTSIDE")).upper() == "INSIDE":
+        def _mirror_pt(pt: tuple[float, float]) -> tuple[float, float]:
+            return (float(ow) - float(pt[0]), float(pt[1]))
+        def _mirror_line(a: tuple[float, float], b: tuple[float, float]):
+            return (_mirror_pt(a), _mirror_pt(b))
+        # Открытие
+        opening_poly = [_mirror_pt(p) for p in opening_poly]
+        # Рама
+        frame_outer = [_mirror_pt(p) for p in frame_outer]
+        frame_inner = [_mirror_pt(p) for p in frame_inner]
+        frame_mitres = [_mirror_line(a, b) for a, b in frame_mitres]
+        # Импосты
+        mullions_v = [[_mirror_pt(p) for p in poly] for poly in mullions_v]
+        mullions_h = [[_mirror_pt(p) for p in poly] for poly in mullions_h]
+        # Стрипы и ячейки
+        strips_x = [(float(ow) - x2, float(ow) - x1) for x1, x2 in strips_x]
+        strips_x.sort(key=lambda v: v[0])
+        for cell in cells:
+            ox1, ox2 = cell["x1"], cell["x2"]
+            cell["x1"] = float(ow) - ox2
+            cell["x2"] = float(ow) - ox1
+        # Створки
+        for sash in sashes:
+            if sash.get("outer_rect"):
+                x1, y1, x2, y2 = sash["outer_rect"]
+                sash["outer_rect"] = (float(ow) - x2, y1, float(ow) - x1, y2)
+            if sash.get("inner_rect"):
+                x1, y1, x2, y2 = sash["inner_rect"]
+                sash["inner_rect"] = (float(ow) - x2, y1, float(ow) - x1, y2)
+            for key in ("outer_contour", "inner_contour", "contour", "mitres", "indicators"):
+                if key in sash and sash[key]:
+                    sash[key] = [((float(ow) - x0, y0), (float(ow) - x1, y1)) for (x0, y0), (x1, y1) in sash[key]]
+        # Подставочник будет зеркалиться ниже, но он симметричен — продублируем
+        # (фактически sill_poly зеркалится так же, но результат тот же прямоугольник)
+
+
+    # 7. Подставочный профиль (зеркалится для INSIDE как и остальная геометрия)
     sill_poly = calc_sill(params, ow, s)
+    if str(params.get("view", "OUTSIDE")).upper() == "INSIDE" and sill_poly:
+        sill_poly = [(float(ow) - x, y) for x, y in sill_poly]
 
-    # 8. Атрибуты блока (8 шт. по ТЗ)
+    # 8. Атрибуты блока — доработка: сливаем в одну строку (6 шт.)
+    # Было 8: OBJECT, WINDOW_NAME, COLOR_OUT, COLOR_IN, GLAZING, SIZE_W, SIZE_H, GRID
+    # Стало 6: Тестовый объект / ОК-1/1 шт. / RAL8017/RAL9016 / Заполнение СПД42 / 1500х1500 / 3х2
     meta = params.get("metadata", {})
+    # Количество — по умолчанию 1 шт., можно задать quantity в metadata или params
+    qty_raw = meta.get("quantity", params.get("quantity", "1 шт."))
+    qty_str = str(qty_raw).strip()
+    # Если quantity уже содержит "/", не дублируем
+    window_combined = f"{window_name}/{qty_str}" if "/" not in qty_str else f"{window_name}{qty_str}"
+    # Цвета — сливаем без пробелов как в примере RAL8017/RAL9016
+    color_out_raw = str(meta.get("color_out", "RAL 8017"))
+    color_in_raw = str(meta.get("color_in", "RAL 9016"))
+    # Убираем пробелы для формата RAL8017
+    color_out_nospace = color_out_raw.replace(" ", "")
+    color_in_nospace = color_in_raw.replace(" ", "")
+    colors_combined = f"{color_out_nospace}/{color_in_nospace}"
+    # Заполнение — формат "Заполнение СПД42"
+    glazing_raw = meta.get("glazing", "СПД42")
+    if isinstance(glazing_raw, (int, float)):
+        # числовое -> СПД{число}
+        glazing_num = int(glazing_raw) if float(glazing_raw).is_integer() else glazing_raw
+        glazing_val = f"Заполнение СПД{glazing_num}"
+    else:
+        g_str = str(glazing_raw).strip()
+        if not g_str:
+            glazing_val = "Заполнение СПД42"
+        elif "Заполнение" in g_str:
+            glazing_val = g_str
+        elif "СПД" in g_str:
+            glazing_val = f"Заполнение {g_str}" if not g_str.startswith("СПД") else f"Заполнение {g_str}"
+            # если уже СПД42 -> Заполнение СПД42
+            if g_str.startswith("СПД"):
+                glazing_val = f"Заполнение {g_str}"
+        else:
+            # например "42" -> СПД42
+            glazing_val = f"Заполнение СПД{g_str}"
+    # Габарит — сливаем WхH кириллицей х (U+0445) как в примере 1500х1500
+    size_combined = f"{int(ow) if ow.is_integer() else ow}х{int(oh) if oh.is_integer() else oh}"
+    grid_combined = f"{cols}х{rows}"
+    object_val = str(meta.get("object", "Тестовый объект"))
     attdefs = [
-        ("OBJECT", "Объект", str(meta.get("object", "Тестовый объект"))),
-        ("WINDOW_NAME", "Название окна", window_name),
-        ("COLOR_OUT", "Цвет снаружи", str(meta.get("color_out", "RAL 8017"))),
-        ("COLOR_IN", "Цвет изнутри", str(meta.get("color_in", "RAL 9016"))),
-        ("GLAZING", "Толщина заполнения", str(meta.get("glazing", "32"))),
-        ("SIZE_W", "Ширина проёма", f"{int(ow) if ow.is_integer() else ow}"),
-        ("SIZE_H", "Высота проёма", f"{int(oh) if oh.is_integer() else oh}"),
-        ("GRID", "Сетка", f"{cols}×{rows}"),
+        ("OBJECT", "Объект", object_val),
+        ("WINDOW", "Окно / кол-во", window_combined),
+        ("COLOR", "Цвет", colors_combined),
+        ("GLAZING", "Заполнение", glazing_val),
+        ("SIZE", "Габарит", size_combined),
+        ("GRID", "Сетка", grid_combined),
     ]
 
-    # Имя блока: WW_<window_name>_<cols>x<rows>_001
-    block_name = f"WW_{window_name}_{cols}x{rows}_001"
+    # Имя блока: "Объект Название окна Габаритные размеры Вид"
+    # Пример: "Тестовый объект ОК-1 1500х1500 Снаружи" / "Тестовый объект ОК-1 1500х1500 Изнутри"
+    view_for_name = str(params.get("view", "OUTSIDE")).upper()
+    view_str = "Снаружи" if view_for_name == "OUTSIDE" else "Изнутри"
+    size_str_for_name = f"{int(ow) if ow.is_integer() else ow}х{int(oh) if oh.is_integer() else oh}"
+    object_str_for_name = str(meta.get("object", "Тестовый объект")).strip()
+    block_name = f"{object_str_for_name} {window_name} {size_str_for_name} {view_str}"
+    # Ограничим длину и заменим недопустимые символы если вдруг
+    # DXF блок имя не должно содержать * ? и т.п., но наши данные безопасны
+    if len(block_name) > 255:
+        block_name = block_name[:255]
 
     # Подсчёт примитивов для отчёта
-    primitives_count = 2  # frame_outer + frame_inner (LWPOLYLINE)
+    # opening 1 (слой Штриховые), frame outer+inner 2, frame mitres 4, mullions, sill, sashes
+    # Доработка: для OUTSIDE наружный контур створки не виден -> не считаем
+    view = str(params.get("view", "OUTSIDE")).upper()
+    primitives_count = 1  # opening
+    primitives_count += 2  # frame_outer + frame_inner (LWPOLYLINE)
+    primitives_count += len(frame_mitres)  # 4 LINE
     primitives_count += len(mullions_v)  # LWPOLYLINE
     primitives_count += len(mullions_h)  # LWPOLYLINE
     if sill_poly:
         primitives_count += 1  # LWPOLYLINE
     for sash in sashes:
-        primitives_count += len(sash["contour"]) + len(sash["indicators"])  # LINEs
+        if view != "OUTSIDE":
+            primitives_count += len(sash["outer_contour"])  # 4 LINE только для INSIDE
+        primitives_count += len(sash["inner_contour"])  # 4 LINE
+        primitives_count += len(sash["mitres"])  # 4 LINE
+        primitives_count += len(sash["indicators"])  # 2 или 4 LINE
     primitives_count += len(attdefs)  # ATTDEF
 
     return {
@@ -427,10 +771,12 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
         "window_name": window_name,
         "block_name": block_name,
         "opening": {"width": ow, "height": oh, "seam": s},
+        "opening_poly": opening_poly,
         "frame_dim": {"width": ow - 2 * s, "height": oh - 2 * s},
         "grid": {"cols": cols, "rows": rows, "cell_w": cell_w, "cell_h": cell_h},
         "frame_outer": frame_outer,
         "frame_inner": frame_inner,
+        "frame_mitres": frame_mitres,
         "strips_x": strips_x,
         "strips_y": strips_y,
         "mullions_v": mullions_v,
@@ -457,44 +803,155 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
     doc = ezdxf.new("R2013")
     doc.encoding = "cp1251"
     doc.header["$DWGCODEPAGE"] = "ANSI_1251"
+    # Масштаб линий для штриховых — 25 (LTSCALE)
+    try:
+        doc.header["$LTSCALE"] = 25.0
+        doc.header["$CELTSCALE"] = 1.0
+    except Exception:
+        pass
 
-    # 2. Создание слоя 'Окна'
+    # 2. Создание слоёв 'Окна' и 'Штриховые' (для контура проёма)
     layer_name = "Окна"
     if layer_name not in doc.layers:
         doc.layers.add(layer_name, color=7)
+    layer_opening = "Штриховые"
+    if layer_opening not in doc.layers:
+        try:
+            # Штриховая линия для проёма, масштаб 25
+            doc.layers.add(layer_opening, color=1, linetype="DASHED")
+        except Exception:
+            try:
+                doc.layers.add(layer_opening, color=1)
+                doc.layers.get(layer_opening).dxf.linetype = "DASHED"
+            except Exception:
+                doc.layers.add(layer_opening, color=1)
+    # Установить масштаб линий для слоя Штриховые — 25 (через CELTSCALE у примитивов)
+    # Глобальный LTSCALE уже 25, дополнительно для каждого примитива на этом слое ставим ltscale 25
+
+    # 2b. Создание текстового стиля WindowStyle с Arial.ttf (ТЗ 0.2)
+    style_name = "WindowStyle"
+    if style_name not in doc.styles:
+        try:
+            doc.styles.new(style_name, dxfattribs={"font": "Arial.ttf"})
+        except Exception:
+            # Фолбэк: если шрифт не доступен, пробуем создать без него
+            doc.styles.new(style_name)
+    else:
+        # Обновляем шрифт если уже существует но не Arial
+        try:
+            style = doc.styles.get(style_name)
+            if style.dxf.font != "Arial.ttf":
+                style.dxf.font = "Arial.ttf"
+        except Exception:
+            pass
 
     # 3. Создание определения блока
     blk = doc.blocks.new(model["block_name"])
 
-    # 4. Добавление рамы (наружный и внутренний контуры)
-    blk.add_lwpolyline(
-        model["frame_outer"],
+    # 4. Добавление габаритного контура проёма (ТЗ 0.2 обязателен) - LWPOLYLINE 0,0 .. OW,OH на слое Штриховые, масштаб 25
+    ent_opening = blk.add_lwpolyline(
+        model["opening_poly"],
         close=True,
-        dxfattribs={"layer": layer_name},
+        dxfattribs={"layer": layer_opening},
     )
-    blk.add_lwpolyline(
-        model["frame_inner"],
-        close=True,
-        dxfattribs={"layer": layer_name},
-    )
+    try:
+        ent_opening.dxf.linetype_scale = 25.0
+    except Exception:
+        pass
 
-    # 5. Добавление вертикальных импостов
-    for poly in model["mullions_v"]:
+    # 5. Добавление рамы (наружный и внутренний контуры)
+    # Для вида изнутри створка (с учётом наплава) обрезает контуры рам и импостов
+    view_frame = str(model.get("params", {}).get("view", "OUTSIDE")).upper()
+    sash_rects = [s.get("outer_rect") for s in model.get("sashes", []) if s.get("outer_rect")]
+    if view_frame == "INSIDE" and sash_rects:
+        # Обрезаем внутренний контур рамы и импосты створками
+        # Наружный контур рамы не трогаем (створка не доходит до наружного края)
         blk.add_lwpolyline(
-            poly,
+            model["frame_outer"],
             close=True,
             dxfattribs={"layer": layer_name},
         )
-
-    # 6. Добавление горизонтальных импостов
-    for poly in model["mullions_h"]:
+        # Внутренний контур рамы — разбиваем на 4 отрезка и вычитаем sash
+        frame_inner_pts = model["frame_inner"]
+        # frame_inner — 4 точки прямоугольника, делаем 4 линии
+        frame_inner_lines = [
+            (frame_inner_pts[0], frame_inner_pts[1]),
+            (frame_inner_pts[1], frame_inner_pts[2]),
+            (frame_inner_pts[2], frame_inner_pts[3]),
+            (frame_inner_pts[3], frame_inner_pts[0]),
+        ]
+        for (x0, y0), (x1, y1) in frame_inner_lines:
+            segs = [((x0, y0), (x1, y1))]
+            for rx1, ry1, rx2, ry2 in sash_rects:
+                new_segs: list[tuple[tuple[float, float], tuple[float, float]]] = []
+                for (sx0, sy0), (sx1, sy1) in segs:
+                    # sash_rect: (x1,y1,x2,y2) -> прямоугольник
+                    new_segs.extend(_subtract_rect_from_line(sx0, sy0, sx1, sy1, rx1, ry1, rx2, ry2))
+                segs = new_segs
+                if not segs:
+                    break
+            for (sx0, sy0), (sx1, sy1) in segs:
+                blk.add_line((sx0, sy0), (sx1, sy1), dxfattribs={"layer": layer_name})
+        # 5b. Косые стыки рамы — тоже обрезаются створкой (если створка перекрывает угол)
+        for p1, p2 in model["frame_mitres"]:
+            segs = [ (p1, p2) ]
+            for rx1, ry1, rx2, ry2 in sash_rects:
+                new_segs = []
+                for (sx0, sy0), (sx1, sy1) in segs:
+                    new_segs.extend(_subtract_rect_from_line(sx0, sy0, sx1, sy1, rx1, ry1, rx2, ry2))
+                segs = new_segs
+                if not segs:
+                    break
+            for (sx0, sy0), (sx1, sy1) in segs:
+                blk.add_line((sx0, sy0), (sx1, sy1), dxfattribs={"layer": layer_name})
+        # 6-7. Импосты — обрезаются створками
+        for poly in model["mullions_v"] + model["mullions_h"]:
+            # poly — 4 точки прямоугольника, делаем 4 линии
+            m_lines = [
+                (poly[0], poly[1]),
+                (poly[1], poly[2]),
+                (poly[2], poly[3]),
+                (poly[3], poly[0]),
+            ]
+            for (x0, y0), (x1, y1) in m_lines:
+                segs = [((x0, y0), (x1, y1))]
+                for rx1, ry1, rx2, ry2 in sash_rects:
+                    new_segs = []
+                    for (sx0, sy0), (sx1, sy1) in segs:
+                        new_segs.extend(_subtract_rect_from_line(sx0, sy0, sx1, sy1, rx1, ry1, rx2, ry2))
+                    segs = new_segs
+                    if not segs:
+                        break
+                for (sx0, sy0), (sx1, sy1) in segs:
+                    blk.add_line((sx0, sy0), (sx1, sy1), dxfattribs={"layer": layer_name})
+    else:
+        # Обычный вид снаружи или нет створок — без обрезки
         blk.add_lwpolyline(
-            poly,
+            model["frame_outer"],
             close=True,
             dxfattribs={"layer": layer_name},
         )
+        blk.add_lwpolyline(
+            model["frame_inner"],
+            close=True,
+            dxfattribs={"layer": layer_name},
+        )
+        for p1, p2 in model["frame_mitres"]:
+            blk.add_line(p1, p2, dxfattribs={"layer": layer_name})
+        for poly in model["mullions_v"]:
+            blk.add_lwpolyline(
+                poly,
+                close=True,
+                dxfattribs={"layer": layer_name},
+            )
+        for poly in model["mullions_h"]:
+            blk.add_lwpolyline(
+                poly,
+                close=True,
+                dxfattribs={"layer": layer_name},
+            )
 
-    # 7. Добавление подставочного профиля
+    # 8. Добавление подставочного профиля
     if model["sill"]:
         blk.add_lwpolyline(
             model["sill"],
@@ -502,30 +959,259 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
             dxfattribs={"layer": layer_name},
         )
 
-    # 8. Добавление створок (линии контура и индикации)
+    # 9. Добавление створок (двухконтурные + 45° стыки + ГОСТ-стрелки)
+    # Доработка: вид OUTSIDE — контур наплава (наружный) не виден; вид INSIDE — наплав виден и обрезает раму
+    view = str(model.get("params", {}).get("view", "OUTSIDE")).upper()
     for sash in model["sashes"]:
-        for p1, p2 in sash["contour"]:
+        # Наружный контур (наплав) — только для INSIDE, для OUTSIDE не виден
+        if view != "OUTSIDE":
+            for p1, p2 in sash.get("outer_contour", []):
+                blk.add_line(p1, p2, dxfattribs={"layer": layer_name})
+        # Внутренний контур (брусок 80 мм) — всегда
+        for p1, p2 in sash.get("inner_contour", []):
             blk.add_line(p1, p2, dxfattribs={"layer": layer_name})
-        for p1, p2 in sash["indicators"]:
+        # Диагональные стыки створки 45° (4) — всегда (связывают наружный и внутренний, но если наружный скрыт — всё равно рисуем)
+        # Для OUTSIDE стыки всё равно нужны, т.к. они видны как часть бруска
+        for p1, p2 in sash.get("mitres", []):
             blk.add_line(p1, p2, dxfattribs={"layer": layer_name})
+        # Линии открывания по ГОСТ — всегда, но по доработке на слое Штриховые, масштаб 25
+        for p1, p2 in sash.get("indicators", []):
+            ent_ind = blk.add_line(p1, p2, dxfattribs={"layer": layer_opening})
+            try:
+                ent_ind.dxf.linetype_scale = 25.0
+            except Exception:
+                pass
+        # Совместимость: если в модели только старый contour без деления
+        if not sash.get("outer_contour") and sash.get("contour"):
+            # Для OUTSIDE старый контур считаем наружным и скрываем
+            if view != "OUTSIDE":
+                for p1, p2 in sash["contour"]:
+                    blk.add_line(p1, p2, dxfattribs={"layer": layer_name})
 
-    # 9. Добавление 8 ATTDEF в блок
+    # 9b. Количество теперь в атрибуте WINDOW (ОК-1/1 шт.), отдельный TEXT не нужен
+    # Оставлено для совместимости: если понадобится отдельный текст — раскомментировать
+    pass
+
+    # 10. Добавление 6 ATTDEF в блок (слитые строки, доработка ТЗ 0.2)
+    # Доработка: вынести выше окна, выровнять по левому углу (x=0, y=OH+...)
+    # Атрибуты: OBJECT / WINDOW(ОК-1/1 шт.) / COLOR(RAL8017/RAL9016) / GLAZING(Заполнение СПД42) / SIZE(1500х1500) / GRID(3х2)
     oh = model["opening"]["height"]
-    y_offset = oh + 100.0
-    for tag, prompt, value in model["attdefs"]:
+    ow = model["opening"]["width"]
+    # Слой для размеров — Размеры, стиль — Основной стиль (увеличенные габариты)
+    layer_dim = "Размеры"
+    dim_layer = "Размеры"
+    dim_style_name = "Основной стиль"
+    text_layer = "Текст"
+    text_style_name = "Основной стиль"
+    if dim_layer not in doc.layers:
+        try:
+            doc.layers.add(dim_layer, color=3)
+        except Exception:
+            pass
+    if text_layer not in doc.layers:
+        try:
+            doc.layers.add(text_layer, color=7)
+        except Exception:
+            pass
+    # Также создаём слой Основной для совместимости
+    if "Основной" not in doc.layers:
+        try:
+            doc.layers.add("Основной", color=7)
+        except Exception:
+            pass
+    # Создаём текстовый стиль Основной стиль (Arial) если нет
+    if text_style_name not in doc.styles:
+        try:
+            doc.styles.new(text_style_name, dxfattribs={"font": "Arial.ttf"})
+        except Exception:
+            try:
+                doc.styles.new(text_style_name)
+            except Exception:
+                pass
+    else:
+        try:
+            st = doc.styles.get(text_style_name)
+            if st.dxf.font != "Arial.ttf":
+                st.dxf.font = "Arial.ttf"
+        except Exception:
+            pass
+    # Создаём размерный стиль Основной стиль и увеличиваем габариты (масштаб 4)
+    if dim_style_name not in doc.dimstyles:
+        try:
+            try:
+                base = doc.dimstyles.get("EZDXF")
+                ds_new = doc.dimstyles.new(dim_style_name)
+                for attr in ("dimtxt", "dimasz", "dimexe", "dimexo", "dimgap", "dimscale"):
+                    try:
+                        setattr(ds_new.dxf, attr, getattr(base.dxf, attr))
+                    except Exception:
+                        pass
+            except Exception:
+                doc.dimstyles.new(dim_style_name)
+        except Exception:
+            pass
+    try:
+        ds = doc.dimstyles.get(dim_style_name)
+        ds.dxf.dimtxt = 8.0  # высота текста размера (было 2.5, стало 8)
+        ds.dxf.dimasz = 6.0  # размер стрелок
+        ds.dxf.dimexe = 3.0
+        ds.dxf.dimexo = 2.5
+        ds.dxf.dimgap = 3.0
+        ds.dxf.dimscale = 4.0  # масштаб 4 как требуется
+        ds.dxf.dimexe = 3.0
+        try:
+            ds.dxf.dimtxsty = text_style_name
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # Для совместимости также оставляем WindowStyle
+    if "WindowStyle" not in doc.styles:
+        try:
+            doc.styles.new("WindowStyle", dxfattribs={"font": "Arial.ttf"})
+        except Exception:
+            pass
+    # Атрибуты — выше окна, по левому углу (x=0), слой Текст, стиль Основной стиль, увеличенный размер
+    x_attr = 0.0  # левый угол проёма
+    y_attr_start = float(oh) + 60.0  # отодвинуто от контура проёма (было 50, стало 60)
+    step = 40.0  # увеличенный шаг (было 35)
+    height_attr = 30.0  # увеличенный размер текста атрибутов (было 22)
+    for idx, (tag, prompt, value) in enumerate(model["attdefs"]):
+        y = y_attr_start + idx * step
         blk.add_attdef(
             tag=tag,
-            insert=(-100.0, y_offset),
+            insert=(x_attr, y),
             text=value,
-            height=50.0,
+            height=height_attr,
             dxfattribs={
                 "prompt": prompt,
-                "layer": layer_name,
+                "layer": text_layer,
+                "style": text_style_name,
             },
         )
-        y_offset -= 80.0
 
-    # 10. Вставка BlockReference в пространство модели (ModelSpace) в точке (0, 0)
+    # 10b. Площадь конструкции в правом верхнем углу — увеличенный размер, корректная привязка
+    # Чтобы при копировании/взрыве не уезжала в 0,0, используем явные координаты и выравнивание
+    try:
+        area_m2 = (float(ow) * float(oh)) / 1_000_000.0  # м²
+        area_text = f"S={area_m2:.2f} м²"
+        area_x = float(ow)
+        area_y = float(oh) + 60.0  # отодвинуто как и атрибуты
+        area_height = 30.0  # увеличенный размер площади (было 20)
+        # Создаём TEXT с выравниванием TOP_RIGHT, явно задаём оба пункта
+        area_ent = blk.add_text(
+            area_text,
+            height=area_height,
+            dxfattribs={"layer": text_layer, "style": text_style_name},
+        )
+        # Явно устанавливаем insert и align_point в одну точку для корректного взрывания
+        area_ent.dxf.insert = (area_x, area_y, 0.0)
+        area_ent.dxf.halign = 2  # Right
+        area_ent.dxf.valign = 3  # Top
+        try:
+            area_ent.dxf.align_point = (area_x, area_y, 0.0)
+        except Exception:
+            pass
+        # Дополнительно для ezdxf set_pos
+        try:
+            area_ent.set_pos((area_x, area_y), align="TOP_RIGHT")
+            # Переопределяем align_point после set_pos чтобы гарантировать
+            area_ent.dxf.align_point = (area_x, area_y, 0.0)
+            area_ent.dxf.insert = (area_x, area_y, 0.0)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # 10c. Размерные цепочки справа и снизу (вертикальные только справа)
+    # Слой — Размеры, стиль — Основной, увеличенные габариты
+    try:
+        s = float(model["opening"]["seam"])
+        fw = float(model["params"]["frame"]["face_width"])
+        cols = int(model["grid"]["cols"])
+        rows = int(model["grid"]["rows"])
+        cell_w = float(model["grid"]["cell_w"])
+        cell_h = float(model["grid"]["cell_h"])
+        mw = float(model["params"].get("mullion", {}).get("width", 0))
+        mh = float(model["params"].get("mullion", {}).get("height", 0))
+        # Рама с учётом зеркала: берём min/max
+        xs = [p[0] for p in model["frame_outer"]]
+        ys = [p[1] for p in model["frame_outer"]]
+        frame_left = float(min(xs))
+        frame_right = float(max(xs))
+        frame_bottom = float(min(ys))
+        frame_top = float(max(ys))
+        # Центры импостов — из модели (уже зеркалены если INSIDE)
+        vert_centers: list[float] = []
+        for poly in model.get("mullions_v", []):
+            # центр вертикального импоста по X
+            xs_m = [p[0] for p in poly]
+            vert_centers.append((min(xs_m) + max(xs_m)) / 2.0)
+        vert_centers.sort()
+        horiz_centers: list[float] = []
+        for poly in model.get("mullions_h", []):
+            ys_m = [p[1] for p in poly]
+            horiz_centers.append((min(ys_m) + max(ys_m)) / 2.0)
+        horiz_centers.sort()
+
+        def _add_dim(p1, p2, base, angle=0):
+            try:
+                dim = blk.add_linear_dim(base=base, p1=p1, p2=p2, angle=angle, dimstyle=dim_style_name)
+                try:
+                    dim.render()
+                except Exception:
+                    pass
+                try:
+                    dim.dimension.dxf.layer = dim_layer
+                except Exception:
+                    try:
+                        dim.dxf.layer = dim_layer
+                    except Exception:
+                        pass
+                # Установить масштаб линий 25 для штриховых? Для размеров не нужно, но увеличим
+                try:
+                    dim.dimension.dxf.linetype_scale = 1.0
+                except Exception:
+                    pass
+                return dim
+            except Exception:
+                try:
+                    blk.add_line(p1, p2, dxfattribs={"layer": dim_layer})
+                except Exception:
+                    pass
+                return None
+
+        # Горизонтальные снизу: привязка к нижнему краю блока (y = frame_bottom для окна, y=0 для проёма)
+        # Отступы увеличены: 60, 120, 180 (было 30,60,90) — отодвинуто от проёма, масштаб 4
+        horiz_points = [frame_left] + vert_centers + [frame_right]
+        base_y_detailed = -60.0
+        for i in range(len(horiz_points) - 1):
+            x_a, x_b = horiz_points[i], horiz_points[i+1]
+            if abs(x_b - x_a) < 1e-6:
+                continue
+            _add_dim(p1=(x_a, frame_bottom), p2=(x_b, frame_bottom), base=(0, base_y_detailed), angle=0)
+        base_y_window = -120.0
+        _add_dim(p1=(frame_left, frame_bottom), p2=(frame_right, frame_bottom), base=(0, base_y_window), angle=0)
+        base_y_opening = -180.0
+        _add_dim(p1=(0, 0), p2=(float(ow), 0), base=(0, base_y_opening), angle=0)
+
+        # Вертикальные только справа: привязка к правому краю блока (x = frame_right для окна, x=OW для проёма)
+        vert_points = [frame_bottom] + horiz_centers + [frame_top]
+        base_x_detailed_r = float(ow) + 60.0
+        for i in range(len(vert_points) - 1):
+            y_a, y_b = vert_points[i], vert_points[i+1]
+            if abs(y_b - y_a) < 1e-6:
+                continue
+            _add_dim(p1=(frame_right, y_a), p2=(frame_right, y_b), base=(base_x_detailed_r, 0), angle=90)
+        base_x_window_r = float(ow) + 120.0
+        _add_dim(p1=(frame_right, frame_bottom), p2=(frame_right, frame_top), base=(base_x_window_r, 0), angle=90)
+        base_x_opening_r = float(ow) + 180.0
+        _add_dim(p1=(float(ow), 0), p2=(float(ow), float(oh)), base=(base_x_opening_r, 0), angle=90)
+
+    except Exception as e:
+        print(f"  Предупреждение: не удалось создать размерные цепочки: {e}")
+
+    # 11. Вставка BlockReference в пространство модели (ModelSpace) в точке (0, 0)
     msp = doc.modelspace()
     bref = msp.add_blockref(
         model["block_name"],
@@ -537,25 +1223,56 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
     attrib_values = {tag: value for tag, _, value in model["attdefs"]}
     bref.add_auto_attribs(attrib_values)
 
-    # Убеждаемся, что все ATTRIB на слое 'Окна'
+    # Атрибуты блока должны быть на слое Текст, стиль Основной стиль, увеличенный размер
     for attrib in bref.attribs:
-        attrib.dxf.layer = layer_name
+        attrib.dxf.layer = text_layer
+        try:
+            attrib.dxf.style = text_style_name
+            attrib.dxf.height = height_attr
+        except Exception:
+            pass
+        # Также выравнивание по левому углу — не наезжать
+        try:
+            attrib.dxf.halign = 0
+            attrib.dxf.valign = 0
+        except Exception:
+            pass
 
-    # 11. Сохранение DXF
+    # 12. Сохранение DXF
     doc.saveas(out_file)
 
 
 def find_oda() -> str | None:
-    """Поиск установленного ODA File Converter в стандартных путях и PATH."""
-    oda_paths = [
+    """Поиск установленного ODA File Converter в стандартных путях и PATH (поддержка winget, любые версии)."""
+    import glob as _glob
+    # Статичные пути + glob для любых версий (включая winget 27.1)
+    oda_patterns = [
         r"C:\Program Files\ODA\ODAFileConverter\ODAFileConverter.exe",
-        r"C:\Program Files\ODA\ODAFileConverter 25.4.0\ODAFileConverter.exe",
-        r"C:\Program Files\ODA\ODAFileConverter 24.12.0\ODAFileConverter.exe",
+        r"C:\Program Files\ODA\ODAFileConverter*\ODAFileConverter.exe",
+        r"C:\Program Files\ODA\*\ODAFileConverter.exe",
         r"C:\Program Files (x86)\ODA\ODAFileConverter\ODAFileConverter.exe",
+        r"C:\Program Files (x86)\ODA\ODAFileConverter*\ODAFileConverter.exe",
     ]
-    for p in oda_paths:
-        if os.path.exists(p):
-            return p
+    for pat in oda_patterns:
+        # если без wildcards — просто проверить
+        if "*" not in pat:
+            if os.path.exists(pat):
+                return pat
+        else:
+            for cand in _glob.glob(pat):
+                if os.path.isfile(cand):
+                    return cand
+
+    # Также проверить winget Packages (иногда ставит туда)
+    winget_glob = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages\ODA.ODAFileConverter*\*")
+    for cand in _glob.glob(winget_glob):
+        # искать exe внутри
+        for exe in _glob.glob(os.path.join(cand, "ODAFileConverter.exe")):
+            if os.path.isfile(exe):
+                return exe
+        for exe in _glob.glob(os.path.join(cand, "**", "ODAFileConverter.exe"), recursive=True):
+            if os.path.isfile(exe):
+                return exe
 
     for name in ("ODAFileConverter", "odafileconverter"):
         found = shutil.which(name)
@@ -580,11 +1297,13 @@ def convert_to_dwg(dxf_path: str | Path) -> str | None:
     dxf_file = Path(dxf_path).resolve()
     out_dir = dxf_file.parent
 
+    # Доработка: для совместимости с AutoCAD 2016/2023 используем ACAD2013 (R2013, AC1027)
+    # ACAD2018 (R2018) не читается в 2016 (макс. R2013), а DXF у нас R2013 — оставляем единый формат 2013
     cmd = [
         oda,
         str(out_dir),
         str(out_dir),
-        "ACAD2018",
+        "ACAD2013",
         "DWG",
         "0",
         "1",
@@ -608,7 +1327,7 @@ def convert_to_dwg(dxf_path: str | Path) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     """Точка входа скрипта."""
     parser = argparse.ArgumentParser(
-        description="Генерация блока окна и экспорт в DXF/DWG (WinPlax Prototype v0.1)"
+        description="Генерация блока окна и экспорт в DXF/DWG (WinPlax v0.2)"
     )
     parser.add_argument(
         "params",
@@ -671,6 +1390,7 @@ def main(argv: list[str] | None = None) -> int:
         print("      Проверка замыкания: OK")
     except Exception as e:
         print(f"[3/6] Расчёт геометрии... ОШИБКА: {e}")
+        import traceback; traceback.print_exc()
         return 1
 
     # 4. Построение модели
@@ -698,10 +1418,38 @@ def main(argv: list[str] | None = None) -> int:
         print(f"      Размер:     {size_kb:.1f} KB")
     except Exception as e:
         print(f"[6/6] Экспорт DXF... ОШИБКА: {e}")
+        import traceback; traceback.print_exc()
         return 1
 
-    # Опциональная конвертация в DWG
-    convert_to_dwg(out_dxf_path)
+    # Опциональная конвертация в DWG — после успеха удалять DXF
+    dwg_res = convert_to_dwg(out_dxf_path)
+    if dwg_res and Path(dwg_res).is_file():
+        try:
+            Path(out_dxf_path).unlink()
+            print(f"  DXF удалён после конвертации (остался DWG): {dwg_res}")
+        except Exception as e:
+            print(f"  Не удалось удалить DXF {out_dxf_path}: {e}")
+
+    # Дополнительно: вид изнутри для отработки ошибок (если основной OUTSIDE)
+    try:
+        current_view = str(params.get("view", "OUTSIDE")).upper()
+        if current_view == "OUTSIDE":
+            inside_params = copy.deepcopy(params)
+            inside_params["view"] = "INSIDE"
+            inside_model = build_window_model(inside_params)
+            inside_path = out_dxf_path.parent / f"{inside_model['window_name']}_INSIDE.dxf"
+            export_to_dxf(inside_model, inside_path)
+            isize = inside_path.stat().st_size / 1024.0
+            print(f"  Вид изнутри (для отработки): ./{inside_path.as_posix()} ({isize:.1f} KB)")
+            dwg_inside = convert_to_dwg(inside_path)
+            if dwg_inside and Path(dwg_inside).is_file():
+                try:
+                    Path(inside_path).unlink()
+                    print(f"  DXF изнутри удалён после конвертации (остался DWG): {dwg_inside}")
+                except Exception as e:
+                    print(f"  Не удалось удалить DXF {inside_path}: {e}")
+    except Exception as e:
+        print(f"  Не удалось сформировать вид изнутри: {e}")
 
     return 0
 
