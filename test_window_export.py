@@ -64,7 +64,7 @@ class TestWindowExport(unittest.TestCase):
         # fixes may be empty; but ensure no errors
 
     def test_04_grid_closure(self):
-        """Сценарий 4: Замыкание сетки COLS·CELL_W + ΣV == GRID_W и ROWS·CELL_H + ΣH == GRID_H (погрешность 1e-6)"""
+        """Сценарий 4: Замыкание сетки COLS·CELL_W + ΣV == GRID_W и ROWS·CELL_H + ΣH == GRID_H (погрешность 1e-6), с учётом подставочника"""
         model = build_window_model(self.params)
         cols = model["grid"]["cols"]
         rows = model["grid"]["rows"]
@@ -75,8 +75,14 @@ class TestWindowExport(unittest.TestCase):
         s = self.params["opening"]["seam"]
         fw = self.params["frame"]["face_width"]
         fh = self.params["frame"]["face_height"]
+        # С подставочником низ рамы S+SH, поэтому grid_h уменьшается на SH
+        sill_on = self.params.get("sill", {}).get("on", False)
+        sh = float(self.params.get("sill", {}).get("height", 30)) if sill_on else 0.0
         grid_w = (self.params["opening"]["width"] - s - fw) - (s + fw)
-        grid_h = (self.params["opening"]["height"] - s - fh) - (s + fh)
+        # Y0 = S+SH+FH если sill, иначе S+FH
+        y0 = (s + sh + fh) if sill_on else (s + fh)
+        y1 = self.params["opening"]["height"] - s - fh
+        grid_h = y1 - y0
         sum_v = (cols - 1) * mw
         sum_h = (rows - 1) * mh
         self.assertAlmostEqual(cols * cell_w + sum_v, grid_w, delta=1e-6)
@@ -90,7 +96,7 @@ class TestWindowExport(unittest.TestCase):
         self.assertEqual(doc.layers.get("Окна").color, 7, "Цвет слоя Окна должен быть 7")
         block_name = "WW_ОК-1_3x2_001"
         blk = doc.blocks[block_name]
-        # Проверка что проём на Штриховые, остальные на Окна
+        # Проверка что проём на Штриховые, остальное преимущественно на Окна; индикаторы створок — на Штриховые (доработка)
         opening_pts = [(0.0,0.0),(1500.0,0.0),(1500.0,1500.0),(0.0,1500.0)]
         for entity in blk:
             if entity.dxftype() == "LWPOLYLINE":
@@ -99,6 +105,9 @@ class TestWindowExport(unittest.TestCase):
                     self.assertEqual(entity.dxf.layer, "Штриховые", "Контур проёма должен быть на слое 'Штриховые'")
                 else:
                     self.assertEqual(entity.dxf.layer, "Окна", f"Элемент блока {entity.dxftype()} должен быть на слое 'Окна'")
+            elif entity.dxftype() == "LINE":
+                # Линии открывания по ГОСТ теперь на Штриховые, остальное на Окна
+                self.assertIn(entity.dxf.layer, ("Окна", "Штриховые"), f"LINE должен быть на Окна или Штриховые")
             else:
                 self.assertEqual(entity.dxf.layer, "Окна", f"Элемент блока {entity.dxftype()} должен быть на слое 'Окна'")
         msp = doc.modelspace()
@@ -211,7 +220,7 @@ class TestWindowExport(unittest.TestCase):
         self.assertEqual(res, 0)
 
     def test_11_dimension_change(self):
-        """Сценарий 11: Изменение габаритов пересчитывает геометрию корректно"""
+        """Сценарий 11: Изменение габаритов пересчитывает геометрию корректно (с подставочником S+SH)"""
         p2 = copy.deepcopy(self.params)
         p2["opening"]["width"] = 2100
         p2["opening"]["height"] = 1800
@@ -221,8 +230,14 @@ class TestWindowExport(unittest.TestCase):
         p2["mullion"]["width"] = 84
         p2["mullion"]["height"] = 84
         m2 = build_window_model(p2)
-        self.assertAlmostEqual(m2["grid"]["cell_w"], 1742.0 / 3.0, places=5)
-        self.assertAlmostEqual(m2["grid"]["cell_h"], 763.0, places=5)
+        # С учётом подставочника SH=30, Y0=S+SH+FH: grid_h=1580, cell_h=748; без sill было бы 763
+        sill_on = p2.get("sill", {}).get("on", False)
+        sh = float(p2.get("sill", {}).get("height", 30)) if sill_on else 0.0
+        expected_cw = 1742.0 / 3.0
+        # grid_h = (1800-25-70) - (25+sh+70) = 1705 - (95+sh) = 1580 при sh=30
+        expected_ch = (1580.0 - 84.0) / 2.0 if sill_on else 763.0
+        self.assertAlmostEqual(m2["grid"]["cell_w"], expected_cw, places=5)
+        self.assertAlmostEqual(m2["grid"]["cell_h"], expected_ch, places=5)
 
     def test_12_grid_1x1(self):
         """Сценарий 12: Сетка 1×1: Только рама, 1 створка, 8 атрибутов, 0 импостов, открытие ДВ"""

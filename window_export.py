@@ -264,20 +264,20 @@ def calc_frame_mitres(ow: float, oh: float, s: float, fw: float, fh: float) -> l
 def calc_sill(params: dict[str, Any], ow: float, s: float) -> list[tuple[float, float]] | None:
     """
     Расчёт контура подставочного профиля (LWPOLYLINE прямоугольник).
-    По доработке ТЗ 0.2: зазор между подставочным профилем и контуром проёма = S (монтажный шов).
-    Контур проёма: y=0, поэтому подставочник выносится ниже проёма:
-    верх = -S, низ = -S - SH  => зазор S между y=0 и верхом подставочника.
-    Прямоугольник: [(S, -S-SH), (OW-S, -S-SH), (OW-S, -S), (S, -S)]
-    (Ранее было [(S, S-SH)…] внутри проёма; теперь с зазором S наружу)
+    Доработка по замечанию: профиль съехал в отрицательную Y, правильно:
+      без подставочника: рама с y=S (30)
+      с подставочником: sill  y=S .. S+SH (30..60), рама с y=S+SH (60)
+    Т.е. зазор S между проёмом (y=0) и низом подставочника (y=S), высота SH, рама над ним.
+    Прямоугольник: [(S, S), (OW-S, S), (OW-S, S+SH), (S, S+SH)]  при sill.on
+    (Ранее ошибочно было ниже 0)
     """
     sill_cfg = params.get("sill", {})
     if not sill_cfg.get("on", False):
         return None
 
     sh = float(sill_cfg.get("height", 30))
-    # Зазор S между контуром проёма (y=0) и верхом подставочника
-    sill_top = -float(s)
-    sill_bottom = sill_top - sh
+    sill_bottom = float(s)
+    sill_top = sill_bottom + sh
     return [
         (s, sill_bottom),
         (ow - s, sill_bottom),
@@ -456,17 +456,44 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
 
     window_name = str(params.get("window_name") or params.get("metadata", {}).get("window_name", "ОК-1")).strip()
 
+    # Доработка: подставочник с зазором S — рама сдвигается вверх
+    sill_cfg_tmp = params.get("sill", {})
+    sill_on_tmp = bool(sill_cfg_tmp.get("on", False))
+    sh_tmp = float(sill_cfg_tmp.get("height", 30)) if sill_on_tmp else 0.0
+
     # 0. Габаритный контур проёма (ТЗ 0.2 обязателен)
     opening_poly = calc_opening(ow, oh)
 
-    # 1. Расчёт рамы
-    frame_outer, frame_inner = calc_frame(ow, oh, s, fw, fh)
-    frame_mitres = calc_frame_mitres(ow, oh, s, fw, fh)
+    # 1. Расчёт рамы с учётом подставочника (доработка: 0-рамка 30-подставочник 60-рама)
+    if sill_on_tmp:
+        # С подставочником: низ рамы на S+SH (60), верх как обычно OH-S
+        frame_outer = [
+            (s, s + sh_tmp),
+            (ow - s, s + sh_tmp),
+            (ow - s, oh - s),
+            (s, oh - s),
+        ]
+        frame_inner = [
+            (s + fw, s + sh_tmp + fh),
+            (ow - s - fw, s + sh_tmp + fh),
+            (ow - s - fw, oh - s - fh),
+            (s + fw, oh - s - fh),
+        ]
+        # 45° стыки с учётом сдвига низа
+        frame_mitres = [
+            ((s, s + sh_tmp), (s + fw, s + sh_tmp + fh)),  # левый нижний
+            ((ow - s, s + sh_tmp), (ow - s - fw, s + sh_tmp + fh)),  # правый нижний
+            ((ow - s, oh - s), (ow - s - fw, oh - s - fh)),  # правый верхний
+            ((s, oh - s), (s + fw, oh - s - fh)),  # левый верхний
+        ]
+    else:
+        frame_outer, frame_inner = calc_frame(ow, oh, s, fw, fh)
+        frame_mitres = calc_frame_mitres(ow, oh, s, fw, fh)
 
-    # 2. Границы внутренней световой сетки
+    # 2. Границы внутренней световой сетки (с учётом подставочника)
     x0 = s + fw
     x1 = ow - s - fw
-    y0 = s + fh
+    y0 = (s + sh_tmp + fh) if sill_on_tmp else (s + fh)
     y1 = oh - s - fh
 
     grid_w = x1 - x0
@@ -690,15 +717,39 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
         # Для OUTSIDE стыки всё равно нужны, т.к. они видны как часть бруска
         for p1, p2 in sash.get("mitres", []):
             blk.add_line(p1, p2, dxfattribs={"layer": layer_name})
-        # Линии открывания по ГОСТ — всегда
+        # Линии открывания по ГОСТ — всегда, но по доработке на слое Штриховые
         for p1, p2 in sash.get("indicators", []):
-            blk.add_line(p1, p2, dxfattribs={"layer": layer_name})
+            blk.add_line(p1, p2, dxfattribs={"layer": layer_opening})
         # Совместимость: если в модели только старый contour без деления
         if not sash.get("outer_contour") and sash.get("contour"):
             # Для OUTSIDE старый контур считаем наружным и скрываем
             if view != "OUTSIDE":
                 for p1, p2 in sash["contour"]:
                     blk.add_line(p1, p2, dxfattribs={"layer": layer_name})
+
+    # 9b. Доработка: количество "1 шт." — отдельный TEXT рядом с окном (в атрибутах ОК-1 указывается окно, количество — отдельным текстом)
+    # В ТЗ 0.2 8 атрибутов, но по замечанию нужен "1 шт." — добавляем как TEXT (не ATTDEF) на слое Окна
+    try:
+        meta_qty = model.get("params", {}).get("metadata", {}).get("quantity") or model.get("params", {}).get("quantity") or "1 шт."
+        qty_x = float(model["opening"]["width"]) / 2.0
+        qty_y = -50.0  # ниже проёма y=0
+        qty_text = blk.add_text(
+            str(meta_qty),
+            height=20.0,
+            dxfattribs={"layer": layer_name, "style": style_name},
+        )
+        # Установка позиции с центровкой
+        try:
+            qty_text.set_pos((qty_x, qty_y), align="MIDDLE_CENTER")
+        except Exception:
+            try:
+                qty_text.dxf.insert = (qty_x, qty_y, 0.0)
+                qty_text.dxf.halign = 4  # Middle
+                qty_text.dxf.valign = 0
+            except Exception:
+                qty_text.dxf.insert = (qty_x, qty_y, 0.0)
+    except Exception:
+        pass
 
     # 10. Добавление 8 ATTDEF в блок по доработке ТЗ 0.2
     # Доработка: сместить левее (X=-200) и крупнее (высота 22), шаг 35, чтобы не наезжали на окно
