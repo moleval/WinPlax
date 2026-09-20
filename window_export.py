@@ -432,6 +432,40 @@ def calc_sashes(
     return sashes
 
 
+def _subtract_rect_from_line(
+    x0: float, y0: float, x1: float, y1: float,
+    rx1: float, ry1: float, rx2: float, ry2: float,
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """
+    Вычитание прямоугольника из линии: возвращает отрезки линии вне прямоугольника.
+    Для вида изнутри: створка обрезает раму/импост.
+    Если линия полностью вне — возвращает исходную, если внутри — [], если пересекает — 1-2 отрезка.
+    """
+    # Нормализуем прямоугольник
+    xmin, xmax = (rx1, rx2) if rx1 < rx2 else (rx2, rx1)
+    ymin, ymax = (ry1, ry2) if ry1 < ry2 else (ry2, ry1)
+    # Проверка: линия полностью вне по bbox
+    # Используем клип чтобы найти внутри часть
+    clipped = _clip_line_to_rect(x0, y0, x1, y1, xmin, ymin, xmax, ymax)
+    if clipped is None:
+        # полностью вне — остаётся
+        return [((x0, y0), (x1, y1))]
+    (cx0, cy0), (cx1, cy1) = clipped
+    # Если clipped совпадает с исходной — полностью внутри
+    if abs(cx0 - x0) < 1e-9 and abs(cy0 - y0) < 1e-9 and abs(cx1 - x1) < 1e-9 and abs(cy1 - y1) < 1e-9:
+        return []
+    # Если clipped - точка, линия касается — считаем как вне?
+    # Разбиваем на до и после
+    res: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    # Отрезок до входа
+    if abs(cx0 - x0) > 1e-9 or abs(cy0 - y0) > 1e-9:
+        res.append(((x0, y0), (cx0, cy0)))
+    # Отрезок после выхода
+    if abs(cx1 - x1) > 1e-9 or abs(cy1 - y1) > 1e-9:
+        res.append(((cx1, cy1), (x1, y1)))
+    return res
+
+
 def _clip_line_to_rect(
     x0: float, y0: float, x1: float, y1: float,
     rx1: float, ry1: float, rx2: float, ry2: float,
@@ -771,36 +805,96 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
     )
 
     # 5. Добавление рамы (наружный и внутренний контуры)
-    blk.add_lwpolyline(
-        model["frame_outer"],
-        close=True,
-        dxfattribs={"layer": layer_name},
-    )
-    blk.add_lwpolyline(
-        model["frame_inner"],
-        close=True,
-        dxfattribs={"layer": layer_name},
-    )
-
-    # 5b. Добавление косых стыков коробки рамы под 45° (4 LINE)
-    for p1, p2 in model["frame_mitres"]:
-        blk.add_line(p1, p2, dxfattribs={"layer": layer_name})
-
-    # 6. Добавление вертикальных импостов
-    for poly in model["mullions_v"]:
+    # Для вида изнутри створка (с учётом наплава) обрезает контуры рам и импостов
+    view_frame = str(model.get("params", {}).get("view", "OUTSIDE")).upper()
+    sash_rects = [s.get("outer_rect") for s in model.get("sashes", []) if s.get("outer_rect")]
+    if view_frame == "INSIDE" and sash_rects:
+        # Обрезаем внутренний контур рамы и импосты створками
+        # Наружный контур рамы не трогаем (створка не доходит до наружного края)
         blk.add_lwpolyline(
-            poly,
+            model["frame_outer"],
             close=True,
             dxfattribs={"layer": layer_name},
         )
-
-    # 7. Добавление горизонтальных импостов
-    for poly in model["mullions_h"]:
+        # Внутренний контур рамы — разбиваем на 4 отрезка и вычитаем sash
+        frame_inner_pts = model["frame_inner"]
+        # frame_inner — 4 точки прямоугольника, делаем 4 линии
+        frame_inner_lines = [
+            (frame_inner_pts[0], frame_inner_pts[1]),
+            (frame_inner_pts[1], frame_inner_pts[2]),
+            (frame_inner_pts[2], frame_inner_pts[3]),
+            (frame_inner_pts[3], frame_inner_pts[0]),
+        ]
+        for (x0, y0), (x1, y1) in frame_inner_lines:
+            segs = [((x0, y0), (x1, y1))]
+            for rx1, ry1, rx2, ry2 in sash_rects:
+                new_segs: list[tuple[tuple[float, float], tuple[float, float]]] = []
+                for (sx0, sy0), (sx1, sy1) in segs:
+                    # sash_rect: (x1,y1,x2,y2) -> прямоугольник
+                    new_segs.extend(_subtract_rect_from_line(sx0, sy0, sx1, sy1, rx1, ry1, rx2, ry2))
+                segs = new_segs
+                if not segs:
+                    break
+            for (sx0, sy0), (sx1, sy1) in segs:
+                blk.add_line((sx0, sy0), (sx1, sy1), dxfattribs={"layer": layer_name})
+        # 5b. Косые стыки рамы — тоже обрезаются створкой (если створка перекрывает угол)
+        for p1, p2 in model["frame_mitres"]:
+            segs = [ (p1, p2) ]
+            for rx1, ry1, rx2, ry2 in sash_rects:
+                new_segs = []
+                for (sx0, sy0), (sx1, sy1) in segs:
+                    new_segs.extend(_subtract_rect_from_line(sx0, sy0, sx1, sy1, rx1, ry1, rx2, ry2))
+                segs = new_segs
+                if not segs:
+                    break
+            for (sx0, sy0), (sx1, sy1) in segs:
+                blk.add_line((sx0, sy0), (sx1, sy1), dxfattribs={"layer": layer_name})
+        # 6-7. Импосты — обрезаются створками
+        for poly in model["mullions_v"] + model["mullions_h"]:
+            # poly — 4 точки прямоугольника, делаем 4 линии
+            m_lines = [
+                (poly[0], poly[1]),
+                (poly[1], poly[2]),
+                (poly[2], poly[3]),
+                (poly[3], poly[0]),
+            ]
+            for (x0, y0), (x1, y1) in m_lines:
+                segs = [((x0, y0), (x1, y1))]
+                for rx1, ry1, rx2, ry2 in sash_rects:
+                    new_segs = []
+                    for (sx0, sy0), (sx1, sy1) in segs:
+                        new_segs.extend(_subtract_rect_from_line(sx0, sy0, sx1, sy1, rx1, ry1, rx2, ry2))
+                    segs = new_segs
+                    if not segs:
+                        break
+                for (sx0, sy0), (sx1, sy1) in segs:
+                    blk.add_line((sx0, sy0), (sx1, sy1), dxfattribs={"layer": layer_name})
+    else:
+        # Обычный вид снаружи или нет створок — без обрезки
         blk.add_lwpolyline(
-            poly,
+            model["frame_outer"],
             close=True,
             dxfattribs={"layer": layer_name},
         )
+        blk.add_lwpolyline(
+            model["frame_inner"],
+            close=True,
+            dxfattribs={"layer": layer_name},
+        )
+        for p1, p2 in model["frame_mitres"]:
+            blk.add_line(p1, p2, dxfattribs={"layer": layer_name})
+        for poly in model["mullions_v"]:
+            blk.add_lwpolyline(
+                poly,
+                close=True,
+                dxfattribs={"layer": layer_name},
+            )
+        for poly in model["mullions_h"]:
+            blk.add_lwpolyline(
+                poly,
+                close=True,
+                dxfattribs={"layer": layer_name},
+            )
 
     # 8. Добавление подставочного профиля
     if model["sill"]:
@@ -840,17 +934,29 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
     pass
 
     # 10. Добавление 6 ATTDEF в блок (слитые строки, доработка ТЗ 0.2)
-    # Доработка: сместить левее (X=-200) и крупнее (высота 22), шаг 35, чтобы не наезжали на окно
-    # Ранее было X=-80, высота 18, шаг 30 — текст мог наезжать на окно при ширине проёма
+    # Доработка: вынести выше окна, выровнять по левому углу (x=0, y=OH+...)
     # Атрибуты: OBJECT / WINDOW(ОК-1/1 шт.) / COLOR(RAL8017/RAL9016) / GLAZING(Заполнение СПД42) / SIZE(1500х1500) / GRID(3х2)
     oh = model["opening"]["height"]
-    x_attr = -200.0  # левее, гарантированно левее окна (окно с 0, текст шириной ~185 при 22мм -> до -15, не наезжает)
-    y_start = float(oh)  # ТЗ: Y = OH (1500.0)
-    step = 35.0  # увеличенный шаг под крупнее шрифт
-    height = 22.0  # крупнее (было 18)
-
+    ow = model["opening"]["width"]
+    # Слой для размеров и площади
+    layer_dim = "Размеры"
+    # Пользователь указал "слой размера Основной" — создаём Основной если нужен, но используем Размеры как основной для размеров
+    # Создадим оба для совместимости
+    for ln, col in [("Размеры", 3), ("Основной", 7)]:
+        if ln not in doc.layers:
+            try:
+                doc.layers.add(ln, color=col)
+            except Exception:
+                pass
+    # Используем Основной как слой для размеров если существует, иначе Размеры
+    dim_layer = "Основной" if "Основной" in doc.layers else layer_dim
+    # Атрибуты — выше окна, по левому углу (x=0)
+    x_attr = 0.0  # левый угол проёма
+    y_attr_start = float(oh) + 50.0  # 50 выше проёма, чтобы не наезжать на раму
+    step = 35.0
+    height = 22.0
     for idx, (tag, prompt, value) in enumerate(model["attdefs"]):
-        y = y_start - idx * step
+        y = y_attr_start + idx * step
         blk.add_attdef(
             tag=tag,
             insert=(x_attr, y),
@@ -858,10 +964,145 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path) -> None:
             height=height,
             dxfattribs={
                 "prompt": prompt,
-                "layer": layer_name,
+                "layer": layer_name,  # атрибуты на слое Окна
                 "style": style_name,
             },
         )
+
+    # 10b. Площадь конструкции в правом верхнем углу
+    try:
+        area_m2 = (float(ow) * float(oh)) / 1_000_000.0  # м²
+        area_text = f"S={area_m2:.2f} м²"
+        # Правый верхний угол — выше окна, выравнивание по правому краю
+        area_x = float(ow)
+        area_y = float(oh) + 50.0
+        area_ent = blk.add_text(
+            area_text,
+            height=20.0,
+            dxfattribs={"layer": layer_name, "style": style_name},
+        )
+        try:
+            area_ent.set_pos((area_x, area_y), align="TOP_RIGHT")
+        except Exception:
+            area_ent.dxf.insert = (area_x, area_y, 0.0)
+            area_ent.dxf.halign = 2  # Right
+            area_ent.dxf.valign = 3  # Top
+    except Exception:
+        pass
+
+    # 10c. Размерные цепочки справа и снизу (и слева аналогично)
+    # Слой для размеров — Основной (или Размеры), стиль — тот же WindowStyle или Standard
+    try:
+        s = float(model["opening"]["seam"])
+        fw = float(model["params"]["frame"]["face_width"])
+        fh = float(model["params"]["frame"]["face_height"])
+        cols = int(model["grid"]["cols"])
+        rows = int(model["grid"]["rows"])
+        cell_w = float(model["grid"]["cell_w"])
+        cell_h = float(model["grid"]["cell_h"])
+        mw = float(model["params"].get("mullion", {}).get("width", 0))
+        mh = float(model["params"].get("mullion", {}).get("height", 0))
+        # Определяем координаты рамы (с учётом подставочника)
+        # frame_outer уже учитывает sill: bottom = S+SH
+        frame_left = float(model["frame_outer"][0][0])  # S
+        frame_right = float(model["frame_outer"][1][0])  # OW-S
+        frame_bottom = float(model["frame_outer"][0][1])  # S или S+SH
+        frame_top = float(model["frame_outer"][3][1])  # OH-S
+        # Центры вертикальных импостов
+        x0 = s + fw
+        # y0 учитывает sill
+        sill_on = bool(model["params"].get("sill", {}).get("on", False))
+        sh = float(model["params"].get("sill", {}).get("height", 30)) if sill_on else 0.0
+        y0 = (s + sh + fh) if sill_on else (s + fh)
+        vert_centers: list[float] = []
+        for i in range(1, cols):
+            x = x0 + i * cell_w + (i - 1) * mw
+            vert_centers.append(x + mw / 2.0)
+        horiz_centers: list[float] = []
+        for j in range(1, rows):
+            y = y0 + j * cell_h + (j - 1) * mh
+            horiz_centers.append(y + mh / 2.0)
+
+        # Вспомогательная функция для добавления линейного размера
+        def _add_dim(p1, p2, base, angle=0):
+            try:
+                # angle 0 - горизонтальный (измеряет по X), 90 - вертикальный (по Y)
+                dim = blk.add_linear_dim(base=base, p1=p1, p2=p2, angle=angle, dimstyle="EZDXF")
+                try:
+                    dim.render()
+                except Exception:
+                    pass
+                # Установить слой
+                try:
+                    dim.dimension.dxf.layer = dim_layer
+                except Exception:
+                    try:
+                        dim.dxf.layer = dim_layer
+                    except Exception:
+                        pass
+                return dim
+            except Exception as e:
+                # fallback: просто линия с текстом
+                try:
+                    blk.add_line(p1, p2, dxfattribs={"layer": dim_layer})
+                except Exception:
+                    pass
+                return None
+
+        # Горизонтальные размеры снизу
+        # Уровни: детальная цепочка y=-30, габарит окна y=-60, габарит проёма y=-90
+        # Для каждой цепочки base y - offset, p1/p2 y = 0 (уровень проёма) или frame_bottom?
+        # Используем Y=0 для проёма, frame_bottom для окна, но для простоты ставим Y=0 для всех p1/p2
+        # Extension lines будут вертикальными, dimension line горизонтальная
+        # Детальная цепочка: от края рамы до середины импоста и т.д.
+        horiz_points = [frame_left] + vert_centers + [frame_right]
+        # Детальная цепочка (сегменты)
+        base_y_detailed = -30.0
+        for i in range(len(horiz_points) - 1):
+            x_a = horiz_points[i]
+            x_b = horiz_points[i + 1]
+            # пропускаем нулевую длину
+            if abs(x_b - x_a) < 1e-6:
+                continue
+            _add_dim(p1=(x_a, 0), p2=(x_b, 0), base=(0, base_y_detailed), angle=0)
+        # Габарит окна (от левого края рамы до правого)
+        base_y_window = -60.0
+        _add_dim(p1=(frame_left, 0), p2=(frame_right, 0), base=(0, base_y_window), angle=0)
+        # Габарит проёма (от 0 до OW)
+        base_y_opening = -90.0
+        _add_dim(p1=(0, 0), p2=(float(ow), 0), base=(0, base_y_opening), angle=0)
+
+        # Вертикальные размеры справа
+        # Уровни: детальная x=OW+30, окно x=OW+60, проём x=OW+90
+        vert_points = [frame_bottom] + horiz_centers + [frame_top]
+        base_x_detailed_r = float(ow) + 30.0
+        for i in range(len(vert_points) - 1):
+            y_a = vert_points[i]
+            y_b = vert_points[i + 1]
+            if abs(y_b - y_a) < 1e-6:
+                continue
+            _add_dim(p1=(0, y_a), p2=(0, y_b), base=(base_x_detailed_r, 0), angle=90)
+        base_x_window_r = float(ow) + 60.0
+        _add_dim(p1=(0, frame_bottom), p2=(0, frame_top), base=(base_x_window_r, 0), angle=90)
+        base_x_opening_r = float(ow) + 90.0
+        _add_dim(p1=(0, 0), p2=(0, float(oh)), base=(base_x_opening_r, 0), angle=90)
+
+        # Вертикальные размеры слева (аналогично справа, зеркально)
+        base_x_detailed_l = -30.0
+        for i in range(len(vert_points) - 1):
+            y_a = vert_points[i]
+            y_b = vert_points[i + 1]
+            if abs(y_b - y_a) < 1e-6:
+                continue
+            _add_dim(p1=(0, y_a), p2=(0, y_b), base=(base_x_detailed_l, 0), angle=90)
+        base_x_window_l = -60.0
+        _add_dim(p1=(0, frame_bottom), p2=(0, frame_top), base=(base_x_window_l, 0), angle=90)
+        base_x_opening_l = -90.0
+        _add_dim(p1=(0, 0), p2=(0, float(oh)), base=(base_x_opening_l, 0), angle=90)
+
+    except Exception as e:
+        # Не критично для экспорта
+        print(f"  Предупреждение: не удалось создать размерные цепочки: {e}")
 
     # 11. Вставка BlockReference в пространство модели (ModelSpace) в точке (0, 0)
     msp = doc.modelspace()

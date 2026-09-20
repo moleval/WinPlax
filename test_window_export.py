@@ -89,15 +89,15 @@ class TestWindowExport(unittest.TestCase):
         self.assertAlmostEqual(rows * cell_h + sum_h, grid_h, delta=1e-6)
 
     def test_05_layer_okna(self):
-        """Сценарий 5: Слои 'Окна' (цвет 7) и 'Штриховые' (проём)"""
+        """Сценарий 5: Слои 'Окна' (цвет 7), 'Штриховые' (проём) и 'Основной'/'Размеры' для размеров"""
         doc = ezdxf.readfile("output/ОК-1.dxf")
         self.assertIn("Окна", doc.layers, "Слой 'Окна' должен существовать")
         self.assertIn("Штриховые", doc.layers, "Слой 'Штриховые' для проёма должен существовать")
+        self.assertIn("Основной", doc.layers, "Слой 'Основной' для размеров должен существовать")
         self.assertEqual(doc.layers.get("Окна").color, 7, "Цвет слоя Окна должен быть 7")
         block_name = "WW_ОК-1_3x2_001"
         blk = doc.blocks[block_name]
-        # Проверка что проём на Штриховые, остальное преимущественно на Окна; индикаторы створок — на Штриховые (доработка)
-        opening_pts = [(0.0,0.0),(1500.0,0.0),(1500.0,1500.0),(0.0,1500.0)]
+        # Проверка слоёв: проём Штриховые, размеры Основной/Размеры, остальное Окна; индикаторы на Штриховые
         for entity in blk:
             if entity.dxftype() == "LWPOLYLINE":
                 pts = [(round(p[0],1), round(p[1],1)) for p in entity.get_points()]
@@ -106,16 +106,24 @@ class TestWindowExport(unittest.TestCase):
                 else:
                     self.assertEqual(entity.dxf.layer, "Окна", f"Элемент блока {entity.dxftype()} должен быть на слое 'Окна'")
             elif entity.dxftype() == "LINE":
-                # Линии открывания по ГОСТ теперь на Штриховые, остальное на Окна
                 self.assertIn(entity.dxf.layer, ("Окна", "Штриховые"), f"LINE должен быть на Окна или Штриховые")
+            elif entity.dxftype() == "DIMENSION":
+                self.assertIn(entity.dxf.layer, ("Основной", "Размеры"), f"DIMENSION должен быть на слое 'Основной' или 'Размеры'")
+            elif entity.dxftype() == "TEXT":
+                # Текст площади на Окна, остальное Окна
+                self.assertIn(entity.dxf.layer, ("Окна", "Основной", "Размеры"), f"TEXT должен быть на Окна/Основной")
             else:
-                self.assertEqual(entity.dxf.layer, "Окна", f"Элемент блока {entity.dxftype()} должен быть на слое 'Окна'")
+                # ATTDEF и т.п. — на Окна
+                if entity.dxftype() in ("ATTDEF", "MTEXT"):
+                    self.assertEqual(entity.dxf.layer, "Окна", f"Элемент блока {entity.dxftype()} должен быть на слое 'Окна'")
         msp = doc.modelspace()
         for entity in msp:
-            self.assertEqual(entity.dxf.layer, "Окна", f"Элемент пространства модели {entity.dxftype()} должен быть на слое 'Окна'")
             if entity.dxftype() == "INSERT":
+                self.assertEqual(entity.dxf.layer, "Окна", f"INSERT должен быть на слое 'Окна'")
                 for attr in entity.attribs:
                     self.assertEqual(attr.dxf.layer, "Окна", f"Атрибут {attr.dxf.tag} должен быть на слое 'Окна'")
+            elif entity.dxftype() == "DIMENSION":
+                self.assertIn(entity.dxf.layer, ("Основной", "Размеры", "Окна"), f"DIMENSION в ModelSpace на слое размеров")
 
     def test_06_attributes_values(self):
         """Сценарий 6: 6 атрибутов с корректными значениями (слитые строки) — GRID 3х2 кириллица"""
@@ -151,7 +159,7 @@ class TestWindowExport(unittest.TestCase):
             self.assertEqual(attrib_map.get(tag), exp_val)
 
     def test_07_attributes_style(self):
-        """Сценарий 7: Стиль атрибутов WindowStyle Arial.ttf высота 22 шаг 35 точка -200, OH (смещены левее, крупнее, не наезжают)"""
+        """Сценарий 7: Стиль атрибутов WindowStyle Arial.ttf высота 22 шаг 35 выше окна слева (X=0, Y=OH+50)"""
         doc = ezdxf.readfile("output/ОК-1.dxf")
         block_name = "WW_ОК-1_3x2_001"
         blk = doc.blocks[block_name]
@@ -169,8 +177,8 @@ class TestWindowExport(unittest.TestCase):
         # Проверка координат первой и шага (доработка: X=-200, шаг 35)
         oh = self.params["opening"]["height"]
         first = [a for a in attdefs if a.dxf.tag == "OBJECT"][0]
-        self.assertAlmostEqual(first.dxf.insert.x, -200.0, delta=1e-6, msg="X первого атрибута должен быть -200 (смещён левее)")
-        self.assertAlmostEqual(first.dxf.insert.y, float(oh), delta=1e-6, msg="Y первого атрибута должен быть OH")
+        self.assertAlmostEqual(first.dxf.insert.x, 0.0, delta=1e-6, msg="X OBJECT должен быть 0 (левый угол)")
+        self.assertAlmostEqual(first.dxf.insert.y, float(oh) + 50.0, delta=1e-6, msg="Y OBJECT должен быть OH+50 (выше окна)")
         # Проверка шага 35 между соседними
         sorted_by_y = sorted(attdefs, key=lambda e: e.dxf.insert.y, reverse=True)
         for i in range(len(sorted_by_y)-1):
@@ -179,7 +187,15 @@ class TestWindowExport(unittest.TestCase):
         # Проверка что атрибуты не наезжают на окно: X + ширина текста < 0 (окно с 0)
         # Приблизительно проверяем что X отрицательный и достаточно левый
         for att in attdefs:
-            self.assertLess(att.dxf.insert.x, -100, f"Атрибут {att.dxf.tag} должен быть левее -100 чтобы не наезжать")
+            self.assertAlmostEqual(att.dxf.insert.x, 0.0, delta=1e-6, msg=f"Атрибут {att.dxf.tag} должен быть на X=0 левый угол")
+            self.assertGreater(att.dxf.insert.y, float(oh), msg=f"Атрибут {att.dxf.tag} должен быть выше окна (Y>OH)")
+        # Проверка площади в правом верхнем углу
+        texts = [e for e in blk if e.dxftype() == "TEXT"]
+        area_texts = [t for t in texts if "м²" in t.dxf.text or "S=" in t.dxf.text]
+        self.assertGreaterEqual(len(area_texts), 1, "Текст площади S=... м² должен присутствовать в правом верхнем углу")
+        for at in area_texts:
+            self.assertAlmostEqual(at.dxf.insert.x, float(self.params["opening"]["width"]), delta=1e-6)
+            self.assertGreater(at.dxf.insert.y, float(oh))
         # Проверка ATTRIB у INSERT также имеют высоту 22 и стиль
         msp = doc.modelspace()
         ins = list(msp.query(f"INSERT[name=='{block_name}']"))[0]
