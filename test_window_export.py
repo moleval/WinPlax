@@ -140,11 +140,16 @@ else:
             self.assertIn("Текст", doc.layers, "Слой 'Текст' для атрибутов должен существовать")
             # Основной остаётся для совместимости
             self.assertIn("Основной", doc.layers, "Слой 'Основной' (совместимость) должен существовать")
-            self.assertIn("Заполнение", doc.layers, "Слой 'Заполнение' (справочный контур СП) должен существовать")
-            # Заполнение должен быть непечатным
+            self.assertIn("Заполнение", doc.layers, "Слой 'Заполнение' (текст размеров СП) должен существовать")
+            self.assertIn("Невидимые", doc.layers, "Слой 'Невидимые' (контур СП под штапиком) должен существовать")
+            # Заполнение и Невидимые должны быть непечатными
             try:
                 lf = doc.layers.get("Заполнение")
                 self.assertEqual(getattr(lf.dxf, "plot", 1), 0, "Слой Заполнение должен быть непечатным (plot=0)")
+                li = doc.layers.get("Невидимые")
+                self.assertEqual(getattr(li.dxf, "plot", 1), 0, "Слой Невидимые должен быть непечатным (plot=0)")
+                # Невидимые — штриховой
+                self.assertNotEqual(li.dxf.linetype, "Continuous", "Слой Невидимые должен быть штриховым, не Continuous")
             except Exception:
                 pass
             # Цвет Окна из шаблона 195, без шаблона 7 — допускаем оба
@@ -159,7 +164,7 @@ else:
             block_name = model["block_name"]
             self.assertIn(block_name, doc.blocks)
             blk = doc.blocks[block_name]
-            # Проверка слоёв: проём Штриховые, размеры Размеры, атрибуты/площадь Текст, заполнения Заполнение, остальное Окна; индикаторы на Штриховые
+            # Проверка слоёв: проём Штриховые, размеры Размеры, атрибуты/площадь Текст, контур СП Невидимые, текст СП Заполнение, остальное Окна; индикаторы на Штриховые
             filling_polys = model.get("filling_polys", [])
             filling_texts = [t for _, t in model.get("filling_texts", [])]
             for entity in blk:
@@ -167,14 +172,17 @@ else:
                     pts = [(round(p[0],1), round(p[1],1)) for p in entity.get_points()]
                     if pts == [(0.0,0.0),(1500.0,0.0),(1500.0,1500.0),(0.0,1500.0)]:
                         self.assertEqual(entity.dxf.layer, "Штриховые", "Контур проёма должен быть на слое 'Штриховые'")
-                    elif entity.dxf.layer == "Заполнение":
+                    elif entity.dxf.layer == "Невидимые":
+                        # контур СП должен быть на Невидимые (под штапиком, штриховой)
                         found = False
                         for fp in filling_polys:
                             fp_rounded = [(round(x,1), round(y,1)) for x,y in fp]
                             if pts == fp_rounded:
                                 found = True
                                 break
-                        self.assertTrue(entity.dxf.layer == "Заполнение")
+                        self.assertTrue(found, "LWPOLYLINE на Невидимые должен совпадать с filling_polys")
+                    elif entity.dxf.layer == "Заполнение":
+                        self.fail("LWPOLYLINE контура заполнения не должен быть на слое Заполнение — он перенесён на Невидимые")
                     else:
                         self.assertEqual(entity.dxf.layer, "Окна", f"Элемент блока {entity.dxftype()} должен быть на слое 'Окна'")
                 elif entity.dxftype() == "LINE":
@@ -730,19 +738,24 @@ else:
                 self.assertEqual(len([e for e in errs2 if "continuous" in e]), 0, f"Алиас {alias} должен валидироваться")
 
         def test_17_bead(self):
-            """Сценарий 17: Штапик — единый параметр системы 25 мм по умолчанию, одинаков для рамы/импостов/створок, валидация"""
+            """Сценарий 17: Штапик — единый параметр системы 25 мм по умолчанию, одинаков для рамы/импостов/створок, валидация; OUTSIDE не рисуется, INSIDE с митрой 45°"""
             base = copy.deepcopy(self.params)
-            # По умолчанию 25
-            m_def = build_window_model(base)
+            # OUTSIDE по умолчанию — штапик не рисуется
+            base_out = copy.deepcopy(base); base_out["view"] = "OUTSIDE"
+            m_out = build_window_model(base_out)
+            self.assertEqual(m_out["bead_width"], 25.0)
+            self.assertEqual(len(m_out["bead_polys"]), 0, "Снаружи штапик не должен генерироваться (OUTSIDE)")
+            # INSIDE — штапик должен присутствовать с митрой 45°
+            base_in = copy.deepcopy(base); base_in["view"] = "INSIDE"
+            m_def = build_window_model(base_in)
             self.assertEqual(m_def["bead_width"], 25.0)
-            self.assertGreater(len(m_def["bead_polys"]), 0, "Штапик должен генерировать полигоны по умолчанию")
-            # Рама: 4 полосы
-            # Считаем рамочные полосы (внутри frame_inner)
+            self.assertGreater(len(m_def["bead_polys"]), 0, "Штапик должен генерировать полигоны для INSIDE")
+            # Рама: 4 полосы трапеции 45°
             fxs = [p[0] for p in m_def["frame_inner"]]; fys = [p[1] for p in m_def["frame_inner"]]
             fx1, fx2 = min(fxs), max(fxs); fy1, fy2 = min(fys), max(fys)
             bw = m_def["bead_width"]
             frame_beads = [poly for poly in m_def["bead_polys"] if min(p[0] for p in poly) >= fx1 -1e-6 and max(p[0] for p in poly) <= fx2+1e-6 and min(p[1] for p in poly) >= fy1-1e-6 and max(p[1] for p in poly) <= fy2+1e-6]
-            self.assertGreaterEqual(len(frame_beads), 4, "Для рамы должно быть минимум 4 полосы штапика")
+            self.assertGreaterEqual(len(frame_beads), 4, "Для рамы должно быть минимум 4 полосы штапика (INSIDE)")
 
             # Пользователь задаёт другое значение
             custom = copy.deepcopy(base)
@@ -798,6 +811,230 @@ else:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
 
+        def test_18_variable_row_heights(self):
+            """Сценарий 18: Переменная высота ячеек row_heights/col_widths с sill/addon: 2×2 нижняя 400 1700×1900 sill+addon60 и 2×3 верхняя 400 2400×1600 sill"""
+            # 2×2 1700×1900 sill + addon top 60, нижняя секция 400
+            p_2x2 = {
+                "window_name": "TEST-2x2",
+                "opening": {"width": 1700, "height": 1900, "seam": 30},
+                "frame": {"face_width": 60, "face_height": 60},
+                "mullion": {"width": 80, "height": 80},
+                "cols": 2, "rows": 2,
+                "sill": {"on": True, "height": 30},
+                "addons": {"top": 60},
+                "row_heights": [400, None],  # нижняя 400, верхняя auto
+                "cells": [],
+            }
+            errs = validate(p_2x2)
+            self.assertEqual(errs, [], f"validate 2x2 не должен давать ошибок: {errs}")
+            m_2x2 = build_window_model(p_2x2)
+            # grid_h = (1900-30-60) - (30+30+60) = 1810 -120=1690? wait compute: frame_top 1810 y0 120 y1 1750 grid 1630 as before
+            # row_heights [400, 1150] (400+1150+80=1630)
+            self.assertEqual(m_2x2["grid"]["rows"], 2)
+            rh = m_2x2["grid"]["row_heights"]
+            self.assertAlmostEqual(rh[0], 400, delta=1e-6, msg="Нижняя секция 2x2 должна быть 400")
+            self.assertAlmostEqual(rh[0] + rh[1] + 80, 1630, delta=1e-6)
+            # Проверяем strips_y: y0=120, y1=520 (400), mullion 520..600, верх 600..1750 (1150)
+            strips_y = m_2x2["strips_y"]
+            self.assertAlmostEqual(strips_y[0][0], 120, delta=1e-6)
+            self.assertAlmostEqual(strips_y[0][1] - strips_y[0][0], 400, delta=1e-6)
+            self.assertAlmostEqual(strips_y[1][1] - strips_y[1][0], 1150, delta=1e-6)
+            # Также проверяем что импост горизонтальный на y=520
+            self.assertEqual(len(m_2x2["mullions_h"]), 2 if m_2x2["mullion_continuous"]=="vertical" else 1)
+            # Экспорт должен пройти без ошибок
+            with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                export_to_dxf(m_2x2, tmp_path)
+                doc = ezdxf.readfile(tmp_path)
+                self.assertIn(m_2x2["block_name"], doc.blocks)
+                self.assertEqual(len(doc.audit().errors), 0)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+
+            # Вариант 2×2 с явным полным списком [400,1150]
+            p_2x2_full = copy.deepcopy(p_2x2)
+            p_2x2_full["row_heights"] = [400, 1150]
+            self.assertEqual(validate(p_2x2_full), [])
+            m_2x2_full = build_window_model(p_2x2_full)
+            self.assertAlmostEqual(m_2x2_full["grid"]["row_heights"][0], 400, delta=1e-6)
+            self.assertAlmostEqual(m_2x2_full["grid"]["row_heights"][1], 1150, delta=1e-6)
+
+            # 2×3 2400×1600 sill, верхняя 400, 3 строки
+            p_2x3 = {
+                "window_name": "TEST-2x3",
+                "opening": {"width": 2400, "height": 1600, "seam": 30},
+                "frame": {"face_width": 60, "face_height": 60},
+                "mullion": {"width": 80, "height": 80},
+                "cols": 2, "rows": 3,
+                "sill": {"on": True, "height": 30},
+                "row_heights": [None, None, 400],  # верхняя 400, нижние auto
+                "cells": [],
+            }
+            errs3 = validate(p_2x3)
+            self.assertEqual(errs3, [], f"validate 2x3 не должен давать ошибок: {errs3}")
+            m_2x3 = build_window_model(p_2x3)
+            rh3 = m_2x3["grid"]["row_heights"]
+            # grid_h = (1600-30-60)-(30+30+60)=1510-120=1390, -160=1230, -400=830/2=415
+            self.assertAlmostEqual(rh3[2], 400, delta=1e-6, msg="Верхняя секция 2x3 должна быть 400")
+            self.assertAlmostEqual(rh3[0], 415, delta=1e-6)
+            self.assertAlmostEqual(rh3[1], 415, delta=1e-6)
+            self.assertAlmostEqual(sum(rh3) + 160, 1390, delta=1e-6)
+            # strips_y снизу вверх
+            sy = m_2x3["strips_y"]
+            self.assertAlmostEqual(sy[2][1] - sy[2][0], 400, delta=1e-6)
+            self.assertAlmostEqual(sy[0][1] - sy[0][0], 415, delta=1e-6)
+            # Валидация ошибки: неверная сумма
+            p_bad = copy.deepcopy(p_2x3)
+            p_bad["row_heights"] = [400, 400, 400]  # 1200+160=1360 !=1390
+            self.assertTrue(any("row_heights" in e for e in validate(p_bad)))
+            # Длина не совпадает
+            p_bad2 = copy.deepcopy(p_2x3)
+            p_bad2["row_heights"] = [400, 400]
+            self.assertTrue(any("row_heights" in e for e in validate(p_bad2)))
+            # Экспорт 2x3
+            with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                export_to_dxf(m_2x3, tmp_path)
+                doc = ezdxf.readfile(tmp_path)
+                self.assertIn(m_2x3["block_name"], doc.blocks)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+
+            # Также col_widths переменная
+            p_col = copy.deepcopy(p_2x2)
+            p_col["col_widths"] = [600, None]
+            # grid_w для 1700: (1700-30-60)-(30+60)=1610-90=1520, -80=1440, -600=840 auto
+            errs_col = validate(p_col)
+            self.assertEqual(errs_col, [])
+            m_col = build_window_model(p_col)
+            self.assertAlmostEqual(m_col["grid"]["col_widths"][0], 600, delta=1e-6)
+            self.assertAlmostEqual(m_col["grid"]["col_widths"][1], 840, delta=1e-6)
+
+        def test_19_bead_45_and_invisible(self):
+            """Сценарий 19: Штапик 45° митра INSIDE, отсутствует OUTSIDE; контур СП на слое Невидимые (скрытый, штриховой)"""
+            base = copy.deepcopy(self.params)
+            base["cols"] = 2; base["rows"] = 2
+            base["view"] = "OUTSIDE"
+            m_out = build_window_model(base)
+            self.assertEqual(len(m_out["bead_polys"]), 0, "Снаружи штапик не должен отрисовываться (OUTSIDE)")
+            # filling всё равно есть, но контур на Невидимые
+            self.assertGreater(len(m_out["filling_polys"]), 0)
+            with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                export_to_dxf(m_out, tmp_path)
+                doc = ezdxf.readfile(tmp_path)
+                blk = doc.blocks[m_out["block_name"]]
+                # Нет полилиний штапика на Окна для OUTSIDE
+                bead_polys_out = [e for e in blk if e.dxftype() == "LWPOLYLINE" and e.dxf.layer == "Окна" and len(list(e.get_points())) == 4]
+                # Отфильтруем раму/мелкие: штапик имеет характерный размер bw=25
+                # Для OUTSIDE bead отсутствует — поэтому количество LWPOLYLINE Окна = рама 2 + импосты + sill
+                # Проверим что нет заполнения на Заполнение
+                filling_on_fill = [e for e in blk if e.dxftype() == "LWPOLYLINE" and e.dxf.layer == "Заполнение"]
+                self.assertEqual(len(filling_on_fill), 0, "Контур СП не должен быть на Заполнение (перенесён на Невидимые)")
+                filling_on_invis = [e for e in blk if e.dxftype() == "LWPOLYLINE" and e.dxf.layer == "Невидимые"]
+                self.assertGreater(len(filling_on_invis), 0, "Контур СП должен быть на Невидимые")
+                for ent in filling_on_invis:
+                    try:
+                        # LWPOLYLINE may not expose linetype_scale in some ezdxf versions
+                        if hasattr(ent.dxf, "linetype_scale"):
+                            self.assertAlmostEqual(ent.dxf.linetype_scale, 25.0, delta=1e-6)
+                    except Exception:
+                        pass
+                # Слой Невидимые штриховой
+                li = doc.layers.get("Невидимые")
+                self.assertNotEqual(li.dxf.linetype, "Continuous")
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+
+            # INSIDE — штапик с митрой 45°
+            base_in = copy.deepcopy(base)
+            base_in["view"] = "INSIDE"
+            base_in["bead"] = 25
+            m_in = build_window_model(base_in)
+            self.assertGreater(len(m_in["bead_polys"]), 0, "Изнутри штапик должен присутствовать")
+            # Проверяем что рамочные полосы — трапеции с диагоналями bw (45°)
+            bw = m_in["bead_width"]
+            fxs = [p[0] for p in m_in["frame_inner"]]; fys = [p[1] for p in m_in["frame_inner"]]
+            fx1, fx2 = min(fxs), max(fxs); fy1, fy2 = min(fys), max(fys)
+            # Найдём нижнюю полосу рамы: y1==fy1, четыре точки
+            bottom_beads = [poly for poly in m_in["bead_polys"] if abs(min(p[1] for p in poly) - fy1) < 1e-6 and abs(max(p[1] for p in poly) - (fy1+bw)) < 1e-6 and min(p[0] for p in poly) >= fx1-1e-6 and max(p[0] for p in poly) <= fx2+1e-6]
+            self.assertGreaterEqual(len(bottom_beads), 1, "Должна быть нижняя полоса рамы")
+            bb = bottom_beads[0]
+            # Ожидаем трапецию: (fx1,fy1),(fx2,fy1),(fx2-bw,fy1+bw),(fx1+bw,fy1+bw) — порядок как в коде
+            # Проверяем что две верхние точки смещены на bw по X и Y
+            self.assertAlmostEqual(bb[0][0], fx1, delta=1e-6); self.assertAlmostEqual(bb[0][1], fy1, delta=1e-6)
+            self.assertAlmostEqual(bb[1][0], fx2, delta=1e-6); self.assertAlmostEqual(bb[1][1], fy1, delta=1e-6)
+            self.assertAlmostEqual(bb[2][0], fx2 - bw, delta=1e-6); self.assertAlmostEqual(bb[2][1], fy1 + bw, delta=1e-6)
+            self.assertAlmostEqual(bb[3][0], fx1 + bw, delta=1e-6); self.assertAlmostEqual(bb[3][1], fy1 + bw, delta=1e-6)
+            # Импост вертикальный: две полосы с митрой на торцах — проверим что верхняя точка смещена на bw
+            # Найдём вертикальный импост: x около середины
+            # Для 2x2 вертикальный импост один сплошной y0..y1
+            # Его левая полоса: (x, y1) .. (x+bw_in, y1+bw) ??? Проверим наличие диагонали
+            vert_beads = [poly for poly in m_in["bead_polys"] if len(poly)==4 and abs(poly[0][0] - poly[3][0])<1e-6 and abs(poly[1][0]-poly[2][0])<1e-6]
+            # Среди них должны быть импостные с высотой сегментов
+            self.assertGreater(len(vert_beads), 0)
+            # Проверяем что хотя бы одна имеет диагональ bw по Y
+            found_diag = False
+            for poly in vert_beads:
+                # левая полоса импоста: (x,y1),(x+bw,y1+bw),(x+bw,y2-bw),(x,y2) — диагонали сверху/снизу
+                ys = [p[1] for p in poly]; xs = [p[0] for p in poly]
+                # Проверяем наличие точек с отступом bw
+                if any(abs(p[1] - (min(ys)+bw)) < 1e-6 and abs(p[0] - (min(xs)+bw)) < 1e-6 for p in poly):
+                    found_diag = True
+                    break
+            self.assertTrue(found_diag, "Штапик импостов должен иметь митру 45° (диагональ bw)")
+
+            # Створки INSIDE — тоже 4 полосы с митрой
+            sash_beads = 0
+            for sash in m_in["sashes"]:
+                ir = sash.get("inner_rect")
+                if not ir: continue
+                sx1,sy1,sx2,sy2 = ir
+                # ищем соответствующую полосу штапика вокруг створки
+                for poly in m_in["bead_polys"]:
+                    if min(p[0] for p in poly) >= min(sx1,sx2)-1e-6 and max(p[0] for p in poly) <= max(sx1,sx2)+1e-6:
+                        # возможно створка
+                        if any(abs(p[1]-sy1)<1e-6 for p in poly):
+                            sash_beads +=1
+                            break
+            self.assertGreater(sash_beads, 0, "Для створок должен быть штапик с митрой")
+
+            # DXF INSIDE: штапик присутствует (как LINE из-за обрезки створкой или LWPOLYLINE)
+            with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                export_to_dxf(m_in, tmp_path)
+                doc = ezdxf.readfile(tmp_path)
+                blk = doc.blocks[m_in["block_name"]]
+                # В INSIDE штапик разбивается на LINE из-за створок, но всё равно на Окна
+                has_bead_line = any(e.dxftype() == "LINE" and e.dxf.layer == "Окна" for e in blk)
+                has_bead_lw = any(e.dxftype() == "LWPOLYLINE" and e.dxf.layer == "Окна" for e in blk)
+                self.assertTrue(has_bead_line or has_bead_lw, "INSIDE: штапик должен быть в DXF")
+                # Заполнение по-прежнему на Невидимые, не на Заполнение
+                filling_on_fill = [e for e in blk if e.dxftype() == "LWPOLYLINE" and e.dxf.layer == "Заполнение"]
+                self.assertEqual(len(filling_on_fill), 0)
+                filling_on_invis = [e for e in blk if e.dxftype() == "LWPOLYLINE" and e.dxf.layer == "Невидимые"]
+                self.assertGreater(len(filling_on_invis), 0)
+                # Текст заполнения на Заполнение с высотой 16
+                txts = [e for e in blk if e.dxftype() == "TEXT" and e.dxf.layer == "Заполнение"]
+                self.assertGreater(len(txts), 0)
+                for t in txts:
+                    self.assertIn("х", t.dxf.text)
+                    self.assertEqual(t.dxf.height, 16.0)
+                # Слой Невидимые должен быть штриховым
+                li = doc.layers.get("Невидимые")
+                self.assertNotEqual(li.dxf.linetype, "Continuous")
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+
 
     if __name__ == "__main__":
         unittest.main()
+

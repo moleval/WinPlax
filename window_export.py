@@ -544,21 +544,104 @@ def validate(params: dict[str, Any]) -> list[str]:
             # для импоста это не критично, но предупредим мягко — не ошибка
             pass
 
-    # 8. Расчётные размеры ячеек
+    # 8. Расчётные размеры ячеек (с учётом подставочника и доборов, а также кастомных row_heights/col_widths)
     if ow and oh and seam is not None and fw and fh and cols and rows and cols >= 1 and rows >= 1:
-        grid_w = (ow - seam - fw) - (seam + fw)
-        grid_h = (oh - seam - fh) - (seam + fh)
+        # Учитываем подставочник и доборы для точной проверки
+        sill_on_v = params.get("sill", {}).get("on", False)
+        sh_v = float(params.get("sill", {}).get("height", 30)) if sill_on_v else 0.0
+        addons_v = params.get("addons", {}) or {}
+        al_v = float(addons_v.get("left", 0) or 0)
+        ar_v = float(addons_v.get("right", 0) or 0)
+        at_v = float(addons_v.get("top", 0) or 0)
+        frame_left_v = seam + al_v
+        frame_right_v = ow - seam - ar_v
+        frame_bottom_v = seam + sh_v if sill_on_v else seam
+        frame_top_v = oh - seam - at_v
+        grid_w_v = (frame_right_v - fw) - (frame_left_v + fw)
+        grid_h_v = (frame_top_v - fh) - (frame_bottom_v + fh)
         sum_v = (cols - 1) * mw
         sum_h = (rows - 1) * mh
 
-        if grid_w - sum_v <= 0:
+        # Проверка кастомных размеров секций (row_heights / col_widths)
+        custom_rows = None
+        for k in ("row_heights", "rows_heights", "heights", "cell_heights", "row_sizes"):
+            if k in params:
+                custom_rows = params[k]
+                break
+            if "grid" in params and isinstance(params["grid"], dict) and k in params["grid"]:
+                custom_rows = params["grid"][k]
+                break
+        custom_cols = None
+        for k in ("col_widths", "cols_widths", "widths", "cell_widths", "col_sizes"):
+            if k in params:
+                custom_cols = params[k]
+                break
+            if "grid" in params and isinstance(params["grid"], dict) and k in params["grid"]:
+                custom_cols = params["grid"][k]
+                break
+        # row_heights: список высот ячеек снизу вверх
+        if custom_rows is not None:
+            if not isinstance(custom_rows, (list, tuple)):
+                errors.append("row_heights должен быть списком чисел")
+            elif len(custom_rows) != rows:
+                errors.append(f"row_heights длина {len(custom_rows)} не совпадает с rows={rows}")
+            else:
+                sum_provided = 0
+                auto_cnt = 0
+                for h in custom_rows:
+                    if h is None or h == 0:
+                        auto_cnt += 1
+                    else:
+                        try:
+                            hv = float(h)
+                            if hv <= 0:
+                                errors.append(f"row_heights значение {h} должно быть >0")
+                            sum_provided += hv
+                        except Exception:
+                            errors.append(f"row_heights значение {h} должно быть числом")
+                if auto_cnt == 0:
+                    if abs(sum_provided + sum_h - grid_h_v) > 1e-6:
+                        errors.append(f"Сумма row_heights {sum_provided} + импосты {sum_h} != grid_h {grid_h_v}")
+                else:
+                    remaining = grid_h_v - sum_h - sum_provided
+                    if remaining <= 1e-9:
+                        errors.append(f"Оставшаяся высота для auto-строк {remaining} недостаточна")
+                    # проверка что auto-строки поместятся
+        if custom_cols is not None:
+            if not isinstance(custom_cols, (list, tuple)):
+                errors.append("col_widths должен быть списком чисел")
+            elif len(custom_cols) != cols:
+                errors.append(f"col_widths длина {len(custom_cols)} не совпадает с cols={cols}")
+            else:
+                sum_provided_w = 0
+                auto_cnt_w = 0
+                for w in custom_cols:
+                    if w is None or w == 0:
+                        auto_cnt_w += 1
+                    else:
+                        try:
+                            wv = float(w)
+                            if wv <= 0:
+                                errors.append(f"col_widths значение {w} должно быть >0")
+                            sum_provided_w += wv
+                        except Exception:
+                            errors.append(f"col_widths значение {w} должно быть числом")
+                if auto_cnt_w == 0:
+                    if abs(sum_provided_w + sum_v - grid_w_v) > 1e-6:
+                        errors.append(f"Сумма col_widths {sum_provided_w} + импосты {sum_v} != grid_w {grid_w_v}")
+                else:
+                    remaining_w = grid_w_v - sum_v - sum_provided_w
+                    if remaining_w <= 1e-9:
+                        errors.append(f"Оставшаяся ширина для auto-колонок {remaining_w} недостаточна")
+
+        if grid_w_v - sum_v <= 0:
             errors.append(
-                f"Ширина светового проёма сетки ({grid_w}) недостаточна для {cols} колонок "
+                f"Ширина светового проёма сетки ({grid_w_v}) недостаточна для {cols} колонок "
                 f"и импостов общей шириной {sum_v}"
             )
-        if grid_h - sum_h <= 0:
+        if grid_h_v - sum_h <= 0:
             errors.append(
-                f"Высота светового проёма сетки ({grid_h}) недостаточна для {rows} строк "
+                f"Высота светового проёма сетки ({grid_h_v}) недостаточна для {rows} строк "
                 f"и импостов общей высотой {sum_h}"
             )
 
@@ -1124,20 +1207,120 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     sum_v = (cols - 1) * mw
     sum_h = (rows - 1) * mh
 
-    cell_w = (grid_w - sum_v) / cols
-    cell_h = (grid_h - sum_h) / rows
+    # Поддержка переменной высоты/ширины ячеек: row_heights (снизу вверх) / col_widths (слева направо)
+    _custom_rows = None
+    for _k in ("row_heights", "rows_heights", "heights", "cell_heights", "row_sizes"):
+        if _k in params:
+            _custom_rows = params[_k]
+            break
+        if "grid" in params and isinstance(params["grid"], dict) and _k in params["grid"]:
+            _custom_rows = params["grid"][_k]
+            break
+    _custom_cols = None
+    for _k in ("col_widths", "cols_widths", "widths", "cell_widths", "col_sizes"):
+        if _k in params:
+            _custom_cols = params[_k]
+            break
+        if "grid" in params and isinstance(params["grid"], dict) and _k in params["grid"]:
+            _custom_cols = params["grid"][_k]
+            break
 
-    # 3. Проверка замыкания сетки ТЗ 1.2 (±1e-6)
-    delta_x = abs(cols * cell_w + sum_v - grid_w)
-    delta_y = abs(rows * cell_h + sum_h - grid_h)
+    # Рассчитываем списки ширин/высот ячеек
+    if _custom_cols is not None:
+        if not isinstance(_custom_cols, (list, tuple)) or len(_custom_cols) != cols:
+            raise ValueError(f"col_widths длина не совпадает с cols={cols}")
+        row_col_widths: list[float] = []
+        auto_idx_w: list[int] = []
+        sum_w = 0.0
+        for i, v in enumerate(_custom_cols):
+            if v is None or v == 0:
+                auto_idx_w.append(i)
+                row_col_widths.append(0.0)  # placeholder
+            else:
+                fv = float(v)
+                row_col_widths.append(fv)
+                sum_w += fv
+        if auto_idx_w:
+            rem_w = grid_w - sum_v - sum_w
+            if rem_w <= 1e-9:
+                raise ValueError(f"Оставшаяся ширина {rem_w} недостаточна для auto колонок")
+            auto_w = rem_w / len(auto_idx_w)
+            for i in auto_idx_w:
+                row_col_widths[i] = auto_w
+        else:
+            # все заданы — проверка замыкания
+            if abs(sum_w + sum_v - grid_w) > 1e-6:
+                raise ValueError(f"Сумма col_widths {sum_w}+{sum_v} != grid_w {grid_w}")
+        cell_w = sum(row_col_widths) / cols if cols else 0  # для совместимости
+        col_widths_list = row_col_widths
+    else:
+        cell_w = (grid_w - sum_v) / cols
+        col_widths_list = [cell_w] * cols
+
+    if _custom_rows is not None:
+        if not isinstance(_custom_rows, (list, tuple)) or len(_custom_rows) != rows:
+            raise ValueError(f"row_heights длина не совпадает с rows={rows}")
+        row_heights_list: list[float] = []
+        auto_idx_h: list[int] = []
+        sum_h_provided = 0.0
+        for j, v in enumerate(_custom_rows):
+            if v is None or v == 0:
+                auto_idx_h.append(j)
+                row_heights_list.append(0.0)
+            else:
+                fv = float(v)
+                row_heights_list.append(fv)
+                sum_h_provided += fv
+        if auto_idx_h:
+            rem_h = grid_h - sum_h - sum_h_provided
+            if rem_h <= 1e-9:
+                raise ValueError(f"Оставшаяся высота {rem_h} недостаточна для auto строк")
+            auto_h = rem_h / len(auto_idx_h)
+            for j in auto_idx_h:
+                row_heights_list[j] = auto_h
+        else:
+            if abs(sum_h_provided + sum_h - grid_h) > 1e-6:
+                raise ValueError(f"Сумма row_heights {sum_h_provided}+{sum_h} != grid_h {grid_h}")
+        cell_h = sum(row_heights_list) / rows if rows else 0
+        row_heights_list_cached = row_heights_list
+    else:
+        cell_h = (grid_h - sum_h) / rows
+        row_heights_list_cached = [cell_h] * rows
+        row_heights_list = row_heights_list_cached
+
+    # Для совместимости также оставляем col_widths_list
+    if _custom_cols is None:
+        col_widths_list = [cell_w] * cols
+
+    # 3. Проверка замыкания сетки ТЗ 1.2 (±1e-6) — с кастомными размерами считаем по спискам
+    if _custom_cols is not None or _custom_rows is not None:
+        delta_x = abs(sum(col_widths_list) + sum_v - grid_w)
+        delta_y = abs(sum(row_heights_list) + sum_h - grid_h)
+    else:
+        delta_x = abs(cols * cell_w + sum_v - grid_w)
+        delta_y = abs(rows * cell_h + sum_h - grid_h)
     if delta_x > 1e-6 or delta_y > 1e-6:
         raise ValueError(
             f"Ошибка замыкания сетки: dX={delta_x:.2e}, dY={delta_y:.2e}"
         )
 
-    # 4. Расчёт полос и ячеек
-    strips_x = calc_strips_x(x0, cell_w, mw, cols)
-    strips_y = calc_strips_y(y0, cell_h, mh, rows)
+    # 4. Расчёт полос и ячеек — с учётом переменных ширин/высот
+    if _custom_cols is not None:
+        strips_x = []
+        cur_x = x0
+        for w in col_widths_list:
+            strips_x.append((cur_x, cur_x + w))
+            cur_x += w + mw
+    else:
+        strips_x = calc_strips_x(x0, cell_w, mw, cols)
+    if _custom_rows is not None:
+        strips_y = []
+        cur_y = y0
+        for h in row_heights_list:
+            strips_y.append((cur_y, cur_y + h))
+            cur_y += h + mh
+    else:
+        strips_y = calc_strips_y(y0, cell_h, mh, rows)
     cells = calc_cells(strips_x, strips_y, params.get("cells", []), cols, rows)
 
     # 5. Импосты с учётом сплошного направления (переключатель мастера)
@@ -1163,10 +1346,17 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     mullions_v: list[list[tuple[float, float]]] = []
     mullions_h: list[list[tuple[float, float]]] = []
 
+    # Подгатавливаем кумулятивные позиции для импостов с учётом переменных ширин/высот
+    def _x_for_v_impost(idx: int) -> float:  # idx 1..cols-1
+        # сумма ширин первых idx колонок + (idx-1)*mw
+        return x0 + sum(col_widths_list[:idx]) + (idx - 1) * mw
+    def _y_for_h_impost(idx: int) -> float:  # idx 1..rows-1
+        return y0 + sum(row_heights_list[:idx]) + (idx - 1) * mh
+
     if mullion_continuous == "vertical":
         # Вертикаль сплошная на всю высоту y0..y1
         for i in range(1, cols):
-            x = x0 + i * cell_w + (i - 1) * mw
+            x = _x_for_v_impost(i)
             mullions_v.append([
                 (x, y0),
                 (x + mw, y0),
@@ -1176,11 +1366,11 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
         # Горизонталь режется между вертикалями (с разрывами)
         vert_intervals = []
         for i in range(1, cols):
-            x = x0 + i * cell_w + (i - 1) * mw
+            x = _x_for_v_impost(i)
             vert_intervals.append((x, x + mw))
         vert_intervals.sort()
         for j in range(1, rows):
-            y = y0 + j * cell_h + (j - 1) * mh
+            y = _y_for_h_impost(j)
             prev_x = x0
             for vx1, vx2 in vert_intervals:
                 if vx1 - prev_x > 1e-9:
@@ -1198,13 +1388,11 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
                     (x1, y + mh),
                     (prev_x, y + mh),
                 ])
-        # если нет вертикалей — горизонталь сплошная уже (выше не сработает, но на всякий)
         if not vert_intervals and rows > 1:
-            # уже добавлены как сегменты выше, но если cols==1, то выше создаст 1 сегмент на всю ширину — ок
             pass
     else:  # horizontal continuous
         for j in range(1, rows):
-            y = y0 + j * cell_h + (j - 1) * mh
+            y = _y_for_h_impost(j)
             mullions_h.append([
                 (x0, y),
                 (x1, y),
@@ -1213,11 +1401,11 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
             ])
         horiz_intervals = []
         for j in range(1, rows):
-            y = y0 + j * cell_h + (j - 1) * mh
+            y = _y_for_h_impost(j)
             horiz_intervals.append((y, y + mh))
         horiz_intervals.sort()
         for i in range(1, cols):
-            x = x0 + i * cell_w + (i - 1) * mw
+            x = _x_for_v_impost(i)
             prev_y = y0
             for hy1, hy2 in horiz_intervals:
                 if hy1 - prev_y > 1e-9:
@@ -1511,31 +1699,34 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
         primitives_count += len(sash["mitres"])  # 4 LINE
         primitives_count += len(sash["indicators"])  # 2 или 4 LINE
     # 7c. Штапик — геометрия (рамa / импосты / створки), одинаковая ширина bead_width_val
+    # Исправлено по замечанию: для вида СНАРУЖИ штапик не виден — не отрисовывать
+    # Для вида ИЗНУТРИ — соединение под 45° (митра)
     bead_polys: list[list[tuple[float, float]]] = []
     bw = bead_width_val
-    if bw > 1e-9:
-        # Рама: 4 полосы вдоль внутренней кромки (толщина bw внутрь проёма)
+    view_for_bead = str(params.get("view", "OUTSIDE")).upper()
+    if view_for_bead == "OUTSIDE":
+        bead_polys = []  # снаружи штапик скрыт рамой/створкой — не рисуем
+    elif bw > 1e-9:
+        # Рама: 4 полосы с митрой 45° вдоль внутренней кромки
         try:
             fxs = [p[0] for p in frame_inner]
             fys = [p[1] for p in frame_inner]
             fx1, fx2 = min(fxs), max(fxs)
             fy1, fy2 = min(fys), max(fys)
             if fx2 - fx1 > 2 * bw + 1e-9 and fy2 - fy1 > 2 * bw + 1e-9:
-                # низ
-                bead_polys.append([(fx1, fy1), (fx2, fy1), (fx2, fy1 + bw), (fx1, fy1 + bw)])
+                # низ — трапеция с диагоналями по углам
+                bead_polys.append([(fx1, fy1), (fx2, fy1), (fx2 - bw, fy1 + bw), (fx1 + bw, fy1 + bw)])
                 # верх
-                bead_polys.append([(fx1, fy2 - bw), (fx2, fy2 - bw), (fx2, fy2), (fx1, fy2)])
-                # лево (без углов, уже покрыты низ/верх)
-                bead_polys.append([(fx1, fy1 + bw), (fx1 + bw, fy1 + bw), (fx1 + bw, fy2 - bw), (fx1, fy2 - bw)])
+                bead_polys.append([(fx1, fy2), (fx1 + bw, fy2 - bw), (fx2 - bw, fy2 - bw), (fx2, fy2)])
+                # лево
+                bead_polys.append([(fx1, fy1), (fx1 + bw, fy1 + bw), (fx1 + bw, fy2 - bw), (fx1, fy2)])
                 # право
-                bead_polys.append([(fx2 - bw, fy1 + bw), (fx2, fy1 + bw), (fx2, fy2 - bw), (fx2 - bw, fy2 - bw)])
+                bead_polys.append([(fx2, fy1), (fx2, fy2), (fx2 - bw, fy2 - bw), (fx2 - bw, fy1 + bw)])
             elif fx2 > fx1 and fy2 > fy1:
-                # слишком узкая ячейка — просто внутренний прямоугольник-ободок как есть (fallback — один контур)
-                # не добавляем, чтобы не перекрывать, но можно было бы добавить тонкий прямоугольник
                 pass
         except Exception:
             pass
-        # Импосты: для каждого сегмента — две полосы вдоль длинной стороны
+        # Импосты: для каждого сегмента — две полосы с митрой на торцах
         for poly in mullions_v:
             try:
                 xs = [p[0] for p in poly]
@@ -1543,16 +1734,14 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
                 x1, x2 = min(xs), max(xs)
                 y1, y2 = min(ys), max(ys)
                 seg_w = x2 - x1
-                # вертикальный импост — полосы слева и справа
-                if seg_w > 1e-9 and (y2 - y1) > 2 * bw + 1e-9:
-                    # левая полоса
+                seg_h = y2 - y1
+                if seg_w > 1e-9 and seg_h > 2 * bw + 1e-9:
                     left_w = min(bw, seg_w / 2 - 0.5)
                     if left_w > 0.5:
-                        bead_polys.append([(x1, y1), (x1 + left_w, y1), (x1 + left_w, y2), (x1, y2)])
-                        bead_polys.append([(x2 - left_w, y1), (x2, y1), (x2, y2), (x2 - left_w, y2)])
-                    else:
-                        # если импост уже тоньше 2*bw — не делим, одна полоса не нужна
-                        pass
+                        # левая полоса с диагоналями сверху/снизу
+                        bead_polys.append([(x1, y1), (x1 + left_w, y1 + bw), (x1 + left_w, y2 - bw), (x1, y2)])
+                        # правая полоса
+                        bead_polys.append([(x2, y1), (x2, y2), (x2 - left_w, y2 - bw), (x2 - left_w, y1 + bw)])
             except Exception:
                 pass
         for poly in mullions_h:
@@ -1561,30 +1750,36 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
                 ys = [p[1] for p in poly]
                 x1, x2 = min(xs), max(xs)
                 y1, y2 = min(ys), max(ys)
+                seg_w = x2 - x1
                 seg_h = y2 - y1
-                if seg_h > 1e-9 and (x2 - x1) > 2 * bw + 1e-9:
+                if seg_h > 1e-9 and seg_w > 2 * bw + 1e-9:
                     bot_h = min(bw, seg_h / 2 - 0.5)
                     if bot_h > 0.5:
-                        bead_polys.append([(x1, y1), (x2, y1), (x2, y1 + bot_h), (x1, y1 + bot_h)])
-                        bead_polys.append([(x1, y2 - bot_h), (x2, y2 - bot_h), (x2, y2), (x1, y2)])
+                        # нижняя полоса с митрой слева/справа
+                        bead_polys.append([(x1, y1), (x2, y1), (x2 - bw, y1 + bot_h), (x1 + bw, y1 + bot_h)])
+                        # верхняя полоса
+                        bead_polys.append([(x1, y2), (x1 + bw, y2 - bot_h), (x2 - bw, y2 - bot_h), (x2, y2)])
             except Exception:
                 pass
-        # Створки: по inner_rect створки — 4 полосы внутрь светового проёма створки
+        # Створки: по inner_rect створки — 4 полосы с митрой 45° внутрь светового проёма
         for sash in sashes:
             try:
                 ir = sash.get("inner_rect")
                 if not ir:
                     continue
                 sx1, sy1, sx2, sy2 = ir
-                # inner_rect может быть не отсортировано, но обычно sx1<sx2, sy1<sy2
                 sx1, sx2 = (min(sx1, sx2), max(sx1, sx2))
                 sy1, sy2 = (min(sy1, sy2), max(sy1, sy2))
                 if sx2 - sx1 <= 2 * bw + 1e-9 or sy2 - sy1 <= 2 * bw + 1e-9:
                     continue
-                bead_polys.append([(sx1, sy1), (sx2, sy1), (sx2, sy1 + bw), (sx1, sy1 + bw)])
-                bead_polys.append([(sx1, sy2 - bw), (sx2, sy2 - bw), (sx2, sy2), (sx1, sy2)])
-                bead_polys.append([(sx1, sy1 + bw), (sx1 + bw, sy1 + bw), (sx1 + bw, sy2 - bw), (sx1, sy2 - bw)])
-                bead_polys.append([(sx2 - bw, sy1 + bw), (sx2, sy1 + bw), (sx2, sy2 - bw), (sx2 - bw, sy2 - bw)])
+                # низ створки — трапеция
+                bead_polys.append([(sx1, sy1), (sx2, sy1), (sx2 - bw, sy1 + bw), (sx1 + bw, sy1 + bw)])
+                # верх
+                bead_polys.append([(sx1, sy2), (sx1 + bw, sy2 - bw), (sx2 - bw, sy2 - bw), (sx2, sy2)])
+                # лево
+                bead_polys.append([(sx1, sy1), (sx1 + bw, sy1 + bw), (sx1 + bw, sy2 - bw), (sx1, sy2)])
+                # право
+                bead_polys.append([(sx2, sy1), (sx2 - bw, sy1 + bw), (sx2 - bw, sy2 - bw), (sx2, sy2)])
             except Exception:
                 pass
     # 7d. Заполнение — справочный контур стеклопакета, непечатный слой Заполнение
@@ -1631,7 +1826,7 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
         "opening": {"width": ow, "height": oh, "seam": s},
         "opening_poly": opening_poly,
         "frame_dim": {"width": ow - 2 * s, "height": oh - 2 * s},
-        "grid": {"cols": cols, "rows": rows, "cell_w": cell_w, "cell_h": cell_h},
+        "grid": {"cols": cols, "rows": rows, "cell_w": cell_w, "cell_h": cell_h, "col_widths": col_widths_list, "row_heights": row_heights_list},
         "frame_outer": frame_outer,
         "frame_inner": frame_inner,
         "frame_mitres": frame_mitres,
@@ -1776,7 +1971,7 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
         except Exception:
             pass
 
-    # 2c. Слой Заполнение — справочный, непечатный/скрытый для контуров СП и размеров заполнений
+    # 2c. Слой Заполнение — справочный, непечатный/скрытый для размеров заполнений (текст W×H)
     layer_fill = "Заполнение"
     if layer_fill not in doc.layers:
         try:
@@ -1796,10 +1991,53 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
             lf.is_plottable = False
         except Exception:
             pass
-        # оставляем включенным, но непечатным
         try:
             lf.is_off = False
             lf.is_frozen = False
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # 2d. Слой Невидимые — для контура стеклопакета, который находится под штапиком (штапик прижимает СП)
+    # Контур скрыт, поэтому рисуется штриховой линией на отдельном слое
+    layer_invis = "Невидимые"
+    if layer_invis not in doc.layers:
+        try:
+            # Пытаемся создать с штриховым типом линии как у Штриховые
+            lt_invis = "GOST2.303 4" if "GOST2.303 4" in doc.linetypes else "DASHED"
+            if lt_invis not in doc.linetypes and lt_invis == "DASHED":
+                try:
+                    doc.linetypes.new("DASHED", dxfattribs={"description": "Dashed"})
+                except Exception:
+                    pass
+            doc.layers.add(layer_invis, color=7, linetype=lt_invis if lt_invis in doc.linetypes else "DASHED")
+        except Exception:
+            try:
+                doc.layers.add(layer_invis, color=7)
+            except Exception:
+                pass
+    try:
+        li = doc.layers.get(layer_invis)
+        # Невидимые — скрытый контур, делаем непечатным или штриховым (оставляем видимым но штриховым)
+        # По ТЗ: непечатный как и Заполнение, но с штриховой линией
+        try:
+            li.dxf.plot = 0
+        except Exception:
+            pass
+        try:
+            li.is_plottable = False
+        except Exception:
+            pass
+        try:
+            li.is_off = False
+            li.is_frozen = False
+        except Exception:
+            pass
+        # Установим штриховой тип если есть
+        try:
+            if li.dxf.linetype == "Continuous":
+                li.dxf.linetype = "DASHED" if "DASHED" in doc.linetypes else li.dxf.linetype
         except Exception:
             pass
     except Exception:
@@ -2005,10 +2243,14 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
         except Exception:
             pass
 
-    # 9d. Заполнение — справочный контур и размер в левом нижнем углу заполнения (слой Заполнение, непечатный)
+    # 9d. Заполнение — контур стеклопакета на слое Невидимые (под штапиком, скрыт), размер на Заполнение
     for poly in model.get("filling_polys", []):
         try:
-            blk.add_lwpolyline(poly, close=True, dxfattribs={"layer": layer_fill})
+            ent = blk.add_lwpolyline(poly, close=True, dxfattribs={"layer": layer_invis})
+            try:
+                ent.dxf.linetype_scale = 25.0
+            except Exception:
+                pass
         except Exception:
             pass
     for (tx, ty), txt in model.get("filling_texts", []):
