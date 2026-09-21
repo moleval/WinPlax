@@ -1498,6 +1498,30 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
                 pass
     except Exception:
         pass
+    # Выравниваем масштаб 2-й цепочки (с точками) с 1-й и 3-й — одинаковый dimscale/dimtxt
+    try:
+        ds_dots = doc.dimstyles.get("Основной стиль с точками")
+        if ds_dots is not None:
+            for attr, val in [("dimtxt", 8.0), ("dimasz", 6.0), ("dimscale", 4.0), ("dimexe", 3.0), ("dimexo", 2.5), ("dimgap", 3.0)]:
+                try:
+                    setattr(ds_dots.dxf, attr, val)
+                except Exception:
+                    pass
+            try:
+                if not getattr(ds_dots.dxf, "dimtxsty", None):
+                    ds_dots.dxf.dimtxsty = "Основной стиль"
+                # если уже есть, оставляем как есть но масштаб уже выровнен
+            except Exception:
+                pass
+            # Синхронизируем dimscale с основным стилем если основной был >4
+            try:
+                main_scale = float(doc.dimstyles.get(dim_style_name).dxf.dimscale) if dim_style_name in doc.dimstyles else 4.0
+                if float(getattr(ds_dots.dxf, "dimscale", 4.0)) != main_scale:
+                    ds_dots.dxf.dimscale = main_scale
+            except Exception:
+                pass
+    except Exception:
+        pass
     # Для случая без шаблона — если стиль только что создан, он уже получил 10, иначе шаблонный тоже 10
     # Старый else для шаблона теперь не нужен, объединено выше
     # Для совместимости также оставляем WindowStyle
@@ -1663,8 +1687,8 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
             _add_dim(p1=(overall_left, horiz_ref_y), p2=(frame_left, horiz_ref_y), base=(0, base_y_detailed), angle=0)
         if addon_right > 1e-9:
             _add_dim(p1=(frame_right, horiz_ref_y), p2=(overall_right, horiz_ref_y), base=(0, base_y_detailed), angle=0)
-        # Монтажные швы горизонтальные — за пределами габарита оконного блока (вынести наружу)
-        base_y_seam = -280.0
+        # Монтажные швы горизонтальные — в одну линию с 2-й цепочкой (base -160)
+        base_y_seam = base_y_window
         if abs(overall_left) > 1e-9:
             _add_dim(p1=(0, 0), p2=(overall_left, 0), base=(0, base_y_seam), angle=0)
         if abs(float(ow) - overall_right) > 1e-9:
@@ -1692,13 +1716,13 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
             # общий с добором уже есть как window overall, дополнительно не нужно
         base_x_opening_r = float(ow) + 240.0
         _add_dim(p1=(float(ow), 0), p2=(float(ow), float(oh)), base=(base_x_opening_r, 0), angle=90)
-        # Монтажные швы вертикальные — во второй цепочке (base 120), горизонтальные — тоже во второй (-120)
+        # Монтажные швы вертикальные — в одну линию с 2-й цепочкой (base +160)
         # Нижний шов: 0 .. horiz_ref_y
         if abs(horiz_ref_y) > 1e-9:
-            _add_dim(p1=(float(ow), 0), p2=(float(ow), horiz_ref_y), base=(float(ow) + 280.0, 0), angle=90)
+            _add_dim(p1=(float(ow), 0), p2=(float(ow), horiz_ref_y), base=(base_x_window_r, 0), angle=90)
         # Верхний шов: overall_top .. OH
         if abs(float(oh) - overall_top) > 1e-9:
-            _add_dim(p1=(float(ow), overall_top), p2=(float(ow), float(oh)), base=(float(ow) + 280.0, 0), angle=90)
+            _add_dim(p1=(float(ow), overall_top), p2=(float(ow), float(oh)), base=(base_x_window_r, 0), angle=90)
 
     except Exception as e:
         print(f"  Предупреждение: не удалось создать размерные цепочки: {e}")

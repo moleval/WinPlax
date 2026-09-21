@@ -266,6 +266,22 @@ def export_all_to_one(models, output_path, template_path=None):
             pass
     except Exception:
         pass
+    # Выравниваем масштаб 2-й цепочки (с точками) с 1-й и 3-й
+    try:
+        ds2 = doc.dimstyles.get("Основной стиль с точками")
+        if ds2 is not None:
+            for attr, val in [("dimtxt", 8.0), ("dimasz", 6.0), ("dimscale", 4.0), ("dimexe", 3.0), ("dimexo", 2.5), ("dimgap", 3.0)]:
+                try:
+                    setattr(ds2.dxf, attr, val)
+                except Exception:
+                    pass
+            try:
+                if not getattr(ds2.dxf, "dimtxsty", None):
+                    ds2.dxf.dimtxsty = "Основной стиль"
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     # Параметры раскладки на листе (в мм)
     cols_on_sheet = 3
