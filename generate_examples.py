@@ -18,7 +18,22 @@ import json
 from pathlib import Path
 import sys
 
-import ezdxf
+try:
+    import ezdxf
+except ModuleNotFoundError:
+    print("=" * 70)
+    print("ОШИБКА: библиотека 'ezdxf' не установлена.")
+    print("=" * 70)
+    print()
+    print("Решение для Windows PowerShell:")
+    print("  python -m pip install ezdxf")
+    print("  # или, если команда 'python' не найдена:")
+    print("  py -m pip install ezdxf")
+    print()
+    print("После установки повторно запустите:")
+    print("  python generate_examples.py")
+    print("=" * 70)
+    sys.exit(1)
 
 from window_export import build_window_model, export_to_dxf, _copy_template_tables
 try:

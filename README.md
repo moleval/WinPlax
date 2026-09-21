@@ -38,11 +38,60 @@
 
 ## 3. Установка
 
-1. Установите зависимость `ezdxf`:
+### 3.1 Windows — PowerShell (ваш случай)
+
+Если видите ошибку `ModuleNotFoundError: No module named 'ezdxf'`:
+
+```powershell
+# 1. Проверьте версию Python (должно показать 3.10+)
+python --version
+py --version
+
+# 2. Установите библиотеку ezdxf (любая из команд — выберите ту, где python найден):
+python -m pip install ezdxf
+# или
+py -m pip install ezdxf
+# или без прав администратора:
+python -m pip install --user ezdxf
+# или из файла зависимостей (в папке проекта):
+python -m pip install -r requirements.txt
+
+# 3. Проверьте установку:
+python -m pip show ezdxf
+python -c "import ezdxf; print(ezdxf.__version__)"
+```
+
+Если видите ошибку `Имя "generate_examples.py" не распознано` — **в PowerShell нельзя запускать `.py` напрямую**. Обязательно добавляйте `python`:
+
+```powershell
+# ❌ Неправильно:
+# generate_examples.py
+# window_export.py
+
+# ✅ Правильно:
+python window_export.py
+python generate_examples.py
+# или, если 'python' не найден:
+py window_export.py
+py generate_examples.py
+
+# Также работает:
+python -m pip --version
+```
+
+> Подсказка Windows: ошибка `Suggestion [3,General]: ... введите ".\generate_examples.py"` не поможет — всё равно нужен `python` впереди.
+
+### 3.2 macOS / Linux
+
 ```bash
 pip install ezdxf
+# или
+pip install -r requirements.txt
+# В изолированных окружениях Debian/Ubuntu при необходимости добавьте --break-system-packages или используйте venv:
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
-*(В изолированных окружениях Debian/Ubuntu при необходимости добавьте флаг `--break-system-packages` или используйте виртуальное окружение `venv`)*.
 
 ---
 
@@ -63,16 +112,24 @@ WinPlax/
 
 ## 5. Быстрый запуск
 
+> ⚠️ **Windows PowerShell:** всегда пишите `python` впереди. Команда `generate_examples.py` без `python` выдаёт `CommandNotFoundException` — это нормально.
+
 Запуск экспорта с параметрами по умолчанию (`params.json`):
 
-```bash
+```powershell
 python window_export.py
+# альтернатива, если 'python' не найден:
+py window_export.py
+# собрать все 12 примеров в один файл:
+python generate_examples.py
+py generate_examples.py
 ```
 
 Или с явным указанием пути к конфигурационному файлу и целевому файлу:
 
 ```bash
 python window_export.py path/to/custom_params.json --output output/CustomWindow.dxf
+python generate_examples.py --output output/Все_примеры.dxf --template Шаблон.dxf
 ```
 
 ### Пример консольного вывода (OUTSIDE — наплав скрыт, 51 примитив; INSIDE — 63):

@@ -18,7 +18,29 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import ezdxf
+try:
+    import ezdxf
+except ModuleNotFoundError:
+    print("=" * 70)
+    print("ОШИБКА: библиотека 'ezdxf' не установлена.")
+    print("=" * 70)
+    print()
+    print("Решение для Windows PowerShell:")
+    print("  python -m pip install ezdxf")
+    print("  # или, если команда 'python' не найдена:")
+    print("  py -m pip install ezdxf")
+    print("  # или с ключом --user (без прав администратора):")
+    print("  python -m pip install --user ezdxf")
+    print()
+    print("После установки повторно запустите:")
+    print("  python window_export.py")
+    print("  python generate_examples.py")
+    print()
+    print("Проверка установки:")
+    print("  python -m pip show ezdxf")
+    print("  python -c \"import ezdxf; print(ezdxf.__version__)\"")
+    print("=" * 70)
+    sys.exit(1)
 
 # --- Шаблонные слои/стили: копирование из пользовательского DXF/DWG ---
 def _copy_template_tables(doc, template_path: str | Path):
