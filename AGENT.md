@@ -1,28 +1,29 @@
 # AGENT.md — правила работы агента WinPlax
 
 > Роль: кодинг-агент Arena AI на ветке `arena/01a0bd65-winplax` (форк `moleval/WinPlax`).
-> Дата актуализации: 2026-09-21
+> Дата актуализации: 2026-09-21 04:50
 
 ## 1. Назначение репозитория
 
 **WinPlax** — параметрический генератор оконных блоков для CAD без AutoCAD.
-Вход — `params.json`, выход — именованный блок DXF R2013 (cp1251) → DWG через ODA File Converter.
+Вход — `params.json` + `profiles.json`, выход — именованный блок DXF R2013 (cp1251) → DWG через ODA File Converter.
 Ключевые сценарии: одиночное окно `python window_export.py`, сборка всех примеров `python generate_examples.py`, тесты `python -m unittest`.
 
 ## 2. Структура проекта
 
 ```
 WinPlax/
-├─ window_export.py        # ядро: validate/build/export/convert, CLI
-├─ generate_examples.py    # 12 примеров → output/Все_примеры.dxf/.dwg
-├─ params.json             # эталон 3×2 (ТЗ 0.2+), view OUTSIDE, bead 25, mullion continuous auto
-├─ test_window_export.py   # 17 тестов ТЗ v0.2+ (замыкание, слои, стили, INSIDE/OUTSIDE, continuous/bead)
+├─ window_export.py        # ядро: validate/build/export/convert, CLI, system+fillings
+├─ generate_examples.py    # 12 примеров → output/Все_примеры.dxf/.dwg (3 системы)
+├─ params.json             # эталон 3×2 (ТЗ 0.2+), system ABSTRACT_60_80_25, view OUTSIDE
+├─ profiles.json           # 3 системы: ABSTRACT_60_80_25 / REHAU_GRAZIO_70 / EXPROF_PROFECTA_S571_70
+├─ test_window_export.py   # 17 тестов ТЗ v0.2+ (замыкание, слои, стили, INSIDE/OUTSIDE, continuous/bead/заполнение)
 ├─ Шаблон.dxf              # пользовательский шаблон (слои/стили/размерные, LTSCALE 25)
 ├─ template_tool.py        # утилиты шаблона
 ├─ output/                 # результаты: ОК-1.dxf/.dwg, ОК-1_INSIDE.*, Все_примеры.*
 ├─ README.md               # пользовательское руководство (устаревает → см. ТЗ.md)
 ├─ AGENT.md                # этот файл
-└─ ТЗ.md                   # техзадание v0.2+дополнения (актуально 2026-09-21)
+└─ ТЗ.md                   # техзадание v0.2+дополнения (актуально 2026-09-21 04:50)
 ```
 
 ## 3. Технологический стек
@@ -35,24 +36,27 @@ WinPlax/
 
 ### 4.1 Слои / типы линий / веса
 - `Окна` 7 `Continuous` — рама, импосты, створки (видимый контур), подставочник, доборы, штапик, блок.
+- `Заполнение` 6 `Continuous` `plot=0` (непечатный, скрытый справочный) — контур стеклопакета в каждой ячейке + текст размера `WхH` в левом нижнем углу заполнения.
 - `Штриховые` 7 `GOST2.303 4` вес 9 (0.09) — контур проёма `(0,0)-(OW,OH)`, масштаб 25 (`LTSCALE 25`).
 - `Размеры` 3 — все `DIMENSION`.
 - `Текст` 7 — `ATTDEF/ATTRIB/TEXT` (площадь), `Основной` 7 — совместимость.
 
 ### 4.2 Текстовые и размерные стили
 - `WindowStyle`/`Основной стиль` → `Arial.ttf` (если шаблон — шрифт из шаблона).
-- `Основной стиль (для надписей)` — для атрибутов/площади, `height 30`, `width` из шаблона.
+- `Основной стиль (для надписей)` — для атрибутов/площади/заполнений, `height 30` (атрибуты/площадь) и `16` (заполнение), `width` из шаблона.
 - `Основной стиль` (размерный): `dimtxt 8, dimasz 6, dimscale 4, dimexe 3, dimexo 2.5, dimgap 3, dimtxsty Основной стиль`.
 - `Основной стиль с точками` — копия масштаба выше (`dimscale 4` синхронизирован), стрелки-точка.
 - Все размеры `dimscale 4` (минимум), вторая цепочка — стиль с точками.
 
 ### 4.3 Геометрия и блок
-- Проём `(0,0)-(OW,OH)`, рама с 45° стыками, импосты `mw/mh`, ячейки `cell_w/h`, створки `overlap 15 + profile 80` (внутренний свет +4 стыка), индикация открывания по видимому габариту ячейки.
+- Проём `(0,0)-(OW,OH)`, рама с 45° стыками, импосты `mw/mh`, ячейки `cell_w/h`, створки `overlap + profile 80` (внутренний свет +4 стыка), индикация открывания по видимому габариту ячейки.
+- **Система профилей** `params.system` → `profiles.json`: `ABSTRACT_60_80_25` (60/80/25/15), `REHAU_GRAZIO_70` (63/76/73/14.5/5), `EXPROF_PROFECTA_S571_70` (60/74/74/20/8). Если в `params` нет явного `frame/mullion/sash/bead` — берётся из системы; явные значения в `params` приоритетны. Валидация `system` — ошибка если не найдена.
 - `view = OUTSIDE` — наплав скрыт, вид зеркалится для `INSIDE` по `X → OW-X`, рама/импосты обрезаются створкой.
 - Подставочник `y=S..S+SH` с зазором `S`; доборы уменьшают раму (`frame_left = S+left`, `frame_right = OW-S-right`, `frame_top = OH-S-top`).
 - Имя блока `"{object} {window_name} {W}х{H} {Снаружи|Изнутри}"` (кириллица `х`), ≤255.
 - Атрибуты (6, сверху вниз): `OBJECT, WINDOW (ОК-1/1 шт.), COLOR (RAL8017/RAL9016), GLAZING (Заполнение СПД…), SIZE (…х…), GRID (3х2)` — `x=0, y_start=OH+60, step 50, h=30`, слой `Текст`.
 - Площадь `S=… м²` в `(OW, OH+60)` `TOP_RIGHT`, `h=30`, тот же стиль/уровень что `GRID` (выровнены по Y).
+- **Заполнение** — для каждой ячейки `cols×rows` справочный контур `filling_poly = (cell/inner_rect inset by bead)` на `Заполнение` + текст `WхH` в `(fx1+8, fy1+8)` `h=16` на том же слое. `w = fx2-fx1`, `h = fy2-fy1`, кириллица `х`, целые без `.0`. Слой непечатный (`plot=0`), скрытый.
 - Вставка блока в `ModelSpace (0,0)`, слой `Окна`, `1:1`.
 
 #### 4.3.1 Сплошной импост (переключатель мастера)
@@ -61,20 +65,18 @@ WinPlax/
   - `grid_w < grid_h` (ширина меньше) → **горизонталь сплошная** на всю ширину `x0..x1`,
   - `grid_w > grid_h` → **вертикаль сплошная** на всю высоту `y0..y1`,
   - квадрат (равны с допуском 1e-9) → `vertical` (tie-break).
-- Больший (делёный) импост **режется на сегменты** между сплошными с разрывом `=mw/mh`, **без пересечения** (зазор равен толщине сплошного). Напр. `3×2` квадрат → `2` вертикали цельных + `1` горизонталь → `3` сегмента; `2×4` высокий → `3` горизонтали цельных + `1` вертикаль → `4` сегмента.
-- Ручной переключатель мастера: радио `Авто / Вертикаль / Горизонталь` переопределяет `auto` (запись `mullion.continuous = vertical|horizontal` в `params.json`).
+- Больший (делёный) импост **режется на сегменты** между сплошными с разрывом `=mw/mh`, **без пересечения**. Напр. `3×2` квадрат → `2` вертикали цельных + `1` горизонталь → `3` сегмента; `2×4` высокий → `3` горизонтали цельных + `1` вертикаль → `4` сегмента.
+- Ручной переключатель мастера: радио `Авто / Вертикаль / Горизонталь` переопределяет `auto`.
 - В модели: `model["mullion_continuous"] == "vertical|horizontal"`, `model["mullions_v"]`/`mullions_h` уже сегментированы.
 
 #### 4.3.2 Штапик (единый для системы)
-- Параметр `bead` / `shtapik` / `bead_width` / `shtapik_width` — ширина штапика `bw` в мм, **одинаков для рамы, импостов, створок**, **по умолчанию `25.0`** (если ключ отсутствует).
-- Валидация: `float >=0`, `bw <= frame.face_width` (иначе ошибка `bead_width не должна превышать ширину рамы`), `bw > mullion width` — мягко (не ошибка, но полосы обрезаются до `mw/2`).
-- В модели: `model["bead_width"] == bw`, `model["bead_polys"]` — список прямоугольников-полос `bw` внутрь:
-  - рама: 4 полосы вдоль `frame_inner` (низ `y1..y1+bw`, верх `y2-bw..y2`, лево `x1..x1+bw` без углов, право `x2-bw..x2`);
-  - вертикальный импост: 2 полосы слева/справа толщиной `bw` на всю высоту сегмента;
-  - горизонтальный импост: 2 полосы снизу/сверху;
-  - створка: 4 полосы внутрь `inner_rect` (аналогично раме).
-- Для `bead_width == 0` — штапик отключён, `bead_polys == []`.
-- Отрисовка: `DXF LWPOLYLINE` на слое `Окна`; для `INSIDE` при наличии створок полосы рамы/импостов разбиваются на `LINE` и обрезаются `outer_rect` створок (аналогично раме).
+- Параметр `bead` / `shtapik` / `bead_width` / `shtapik_width` — ширина штапика `bw` в мм, **одинаков для рамы, импостов, створок**, **по умолчанию из системы** (`ABSTRACT 25`, `GRAZIO 14.5 [6.5/14.5]`, `Profecta S358 20`) или `25.0` если системы нет.
+- Валидация: `float >=0`, `bw <= frame.face_width` (иначе ошибка), `bw > mullion width` — мягко.
+- В модели: `model["bead_width"] == bw`, `model["bead_polys"]` — список прямоугольников-полос `bw` внутрь: рама 4 + `2·V` + `2·H` + `4·S`. Для `bw==0` — `[]`. Отрисовка `Окна`, для `INSIDE` разбивается на `LINE` с вычитанием створок.
+
+#### 4.3.3 Заполнение (справочное)
+- Для каждой ячейки `fillings[i] = {cell, rect=(fx1,fy1,fx2,fy2), poly, w, h, text, pos}` где `rect = (inner_rect or cell rect) inset by bead` (отступ `bw` внутрь). `poly` — `LWPOLYLINE` на `Заполнение`, `text = "WхH"` в `(fx1+8, fy1+8)` `h=16` на том же слое. Слой `plot=0`.
+- В модели: `model["fillings"]`, `model["filling_polys"]`, `model["filling_texts"]`.
 
 ### 4.4 Размеры — три цепочки (отступы 80/160/240, масштаб 4)
 - **1-я (-80 / +80)**: детализация ячеек + боковые доборы (отдельно) — `Основной стиль`.
@@ -83,21 +85,18 @@ WinPlax/
 - Гориз. привязка `y = horiz_ref_y` (низ подставочника/рамы), вертик. `x = overall_right` (или `frame_right`) справа.
 
 ### 4.5 Примитивы и подсчёт
-`opening 1 + frame 2+4 + mullions (сегментированные) + sill 1 + addons + bead_polys + sashes (outer только INSIDE + inner 4 + mitres 4 + indicators 2/4) + attdefs 6`. `bead_polys` 4 (рама) + `2·len(mullions_v сегментов)` + `2·len(mullions_h сегментов)` + `4·len(sashes)` (если не нулевой `bw` и ячейка шире `2·bw`).
+`opening 1 + frame 2+4 + mullions (сегментированные) + sill 1 + addons + bead_polys + sashes (outer только INSIDE + inner 4 + mitres 4 + indicators 2/4) + attdefs 6` (+ справочные `filling_polys` на `Заполнение` не считаются). `bead_polys` 4 (рама) + `2·len(mullions_v)` + `2·len(mullions_h)` + `4·len(sashes)`.
 
 ## 5. CLI и конвертация
 
 ```bash
 python window_export.py [params.json] [-o output/ОК-1.dxf] [-t Шаблон.dxf]
 python generate_examples.py [-t Шаблон.dxf] [-o output/Все_примеры.dxf] [--cols 3]
-
-# шаблон: явный -t > params.template > автопоиск (template/шаблон/Шаблон/БШАБЛОН .dxf/.dwg рядом с params/output/скриптом)
-# ODA: input=output, ACAD2013, DWG, 0, 1, <имя.dxf> → при успехе DXF удаляется, остаётся DWG
 ```
 
-- `window_export.py` всегда: одиночный (+ `*_INSIDE` если `OUTSIDE`) + **Все_примеры** (12 блоков) при отсутствии `unittest` в `argv` (ezdxf тянет `unittest` в `sys.modules` — проверять `sys.argv`).
-- **Блокировка файла на Windows** (`PermissionError 13` при открытом превью/AutoCAD): перед `saveas` пытаться `unlink()`, при занятости — сохранять `*_new.dxf` с подсказкой, не падать с traceback; аналогично при удалении DXF после DWG.
-- Новые ключи: `mullion.continuous` и `bead.width` (или `shtapik`) — валидируются, попадают в `params.json` и `generate_examples` (диверсификация `auto/vertical/horizontal` и `bead 20/25/30`).
+- `window_export.py` всегда: одиночный (+ `*_INSIDE` если `OUTSIDE`) + **Все_примеры** (12 блоков) при отсутствии `unittest` в `argv`.
+- **Блокировка файла на Windows** (`PermissionError 13`): перед `saveas` пытаться `unlink()`, при занятости — сохранять `*_new.dxf`.
+- Новые ключи: `system` (`ABSTRACT_...`/`REHAU_...`/`EXPROF_...`), `mullion.continuous`, `bead.width`, `Заполнение` — справочный слой.
 
 ## 6. Тесты
 
@@ -106,7 +105,7 @@ python -m unittest -v          # 17 тестов, ~9с
 python -m unittest test_window_export.TestWindowExport.test_05_layer_okna
 ```
 
-Проверяют: `R2013/ANSI_1251`, `auditor.errors==[]`, замыкание `1e-6`, слои/стили, `dimstyle` ∈ {Основной, с точками}, `GRID 3х2` кириллица, атрибуты `(0,OH+60)` и `TOP_RIGHT` для площади, имя блока, ODA-ветку, `1×1`/`8×4` (с учётом сегментирования сплошного импоста), `INSIDE/OUTSIDE` (`Continuous` vs `ByLayer`), **сплошной импост** (`auto` по наименьшей стороне, переключатель, разрыв, алиасы) и **штапик** (`default 25`, алиасы, `>=0`, `<=FW`, полигоны, DXF слой).
+Проверяют: `R2013/ANSI_1251`, `auditor.errors==[]`, замыкание `1e-6`, слои `Окна 7/195, Штриховые GOST2.303 4 0.09, Заполнение 6 plot0, Размеры, Текст`, стили, `dimstyle` ∈ {Основной, с точками}, `GRID 3х2`, атрибуты `(0,OH+60)` и `TOP_RIGHT`, имя блока, ODA-ветку, `1×1`/`8×4` (с учётом сегментирования), `INSIDE/OUTSIDE`, **сплошной импост**, **штапик**, **заполнение** (контур + текст `WхH` в левом нижнем углу на `Заполнение`, непечатный).
 
 ## 7. Git-правила сессии Arena
 
@@ -117,21 +116,23 @@ python -m unittest test_window_export.TestWindowExport.test_05_layer_okna
 
 ## 8. Процесс задач и отладка
 
-1. Изучение `ТЗ.md` + `README.md` + `window_export.py`/`generate_examples.py`.
+1. Изучение `ТЗ.md` + `README.md` + `window_export.py`/`generate_examples.py` + `profiles.json`.
 2. Правка через `edit_file`/`write_file`, проверка `py_compile`, прогон `python window_export.py` и `generate_examples.py`, `ezdxf readfile` на слой/стиль/координаты, `unittest`.
 3. При затрагивании размеров — проверять `defpoint` (база -80/-160/-240, +80/+160/+240) и `dimscale` обоих стилей.
 4. При работе с `Все_примеры` — учитывать блокировку Windows, возврат фактического пути `*_new`.
-5. Сплошной импост: проверять `grid_w vs grid_h`, `mullion_continuous`, что делёный не пересекает сплошной; штапик: `bead_width` 25 default, полосы 4+2·V+2·H+4·S.
+5. Система: проверять `system` и fallback `profiles.json`; Заполнение: проверять `plot=0` и текст `WхH` в `(fx1+8,fy1+8)`.
 
 ## 9. Частые ловушки
 
-- `ezdxf` импортирует `unittest` → проверка `if "unittest" in sys.modules` ложно-позитивна; проверять `sys.argv`.
-- `GOST2.303 4` с пробелом — создавать/искать с пробелом, fallback `DASHED`.
-- `OW/OH` — кириллица `х` в `SIZE`/`GRID`, латиница `x` только в имени блока старой версии (сейчас кириллица везде).
-- `dimstyle с точками` должен существовать в шаблоне; если нет — `doc.dimstyles.new()` + синхронизация масштаба.
+- `ezdxf` импортирует `unittest` → проверять `sys.argv`, не `sys.modules`.
+- `GOST2.303 4` с пробелом — fallback `DASHED`.
+- `OW/OH` — кириллица `х` в `SIZE`/`GRID` и в `Заполнение` тексте.
+- `dimstyle с точками` — `doc.dimstyles.new()` + синхронизация масштаба.
 - `output/Все_примеры.dxf` после DWG должен удаляться; при занятости — остаётся `_new`.
-- `mullion.continuous` — алиасы `v/h`, `вертикаль/горизонталь`; `auto` квадрат → `vertical`; делёный режется на `cols`/`rows` сегментов, не забывать `mullions_v/h` теперь списки сегментов, а не 1-1 к `cols-1/rows-1`.
-- `bead` — алиасы `shtapik`/`bead_width`/`shtapik_width` как число или `{width}`, default 25, `0` отключает; `bead_polys` добавляет примитивы, не забывать обновить `primitives_count` и DXF слой `Окна`.
+- `mullion.continuous` — алиасы `v/h`, `вертикаль/горизонталь`; `auto` квадрат → `vertical`; делёный режется на `cols`/`rows` сегментов.
+- `bead` — алиасы `shtapik`/`bead_width`/`shtapik_width` как число или `{width}`, default из системы, `0` отключает.
+- `system` — если `frame` не указан в `params`, берётся из `profiles.json`; ошибка если `system` не найдена.
+- `Заполнение` — слой `plot=0` (непечатный), проверять что `filling_polys` и `filling_texts` совпадают с моделью, а не с `Окна`/`Текст`.
 
 ## 10. Контакты и окружение
 

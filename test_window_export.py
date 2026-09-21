@@ -97,6 +97,13 @@ class TestWindowExport(unittest.TestCase):
         self.assertIn("Текст", doc.layers, "Слой 'Текст' для атрибутов должен существовать")
         # Основной остаётся для совместимости
         self.assertIn("Основной", doc.layers, "Слой 'Основной' (совместимость) должен существовать")
+        self.assertIn("Заполнение", doc.layers, "Слой 'Заполнение' (справочный контур СП) должен существовать")
+        # Заполнение должен быть непечатным
+        try:
+            lf = doc.layers.get("Заполнение")
+            self.assertEqual(getattr(lf.dxf, "plot", 1), 0, "Слой Заполнение должен быть непечатным (plot=0)")
+        except Exception:
+            pass
         # Цвет Окна из шаблона 195, без шаблона 7 — допускаем оба
         self.assertIn(doc.layers.get("Окна").color, (7, 195), "Цвет слоя Окна должен быть 7 (без шаблона) или 195 (из Шаблон.dxf)")
         self.assertIn("Основной стиль", doc.styles, "Стиль 'Основной стиль' должен существовать")
@@ -109,12 +116,22 @@ class TestWindowExport(unittest.TestCase):
         block_name = model["block_name"]
         self.assertIn(block_name, doc.blocks)
         blk = doc.blocks[block_name]
-        # Проверка слоёв: проём Штриховые, размеры Размеры, атрибуты/площадь Текст, остальное Окна; индикаторы на Штриховые
+        # Проверка слоёв: проём Штриховые, размеры Размеры, атрибуты/площадь Текст, заполнения Заполнение, остальное Окна; индикаторы на Штриховые
+        filling_polys = model.get("filling_polys", [])
+        filling_texts = [t for _, t in model.get("filling_texts", [])]
         for entity in blk:
             if entity.dxftype() == "LWPOLYLINE":
                 pts = [(round(p[0],1), round(p[1],1)) for p in entity.get_points()]
                 if pts == [(0.0,0.0),(1500.0,0.0),(1500.0,1500.0),(0.0,1500.0)]:
                     self.assertEqual(entity.dxf.layer, "Штриховые", "Контур проёма должен быть на слое 'Штриховые'")
+                elif entity.dxf.layer == "Заполнение":
+                    found = False
+                    for fp in filling_polys:
+                        fp_rounded = [(round(x,1), round(y,1)) for x,y in fp]
+                        if pts == fp_rounded:
+                            found = True
+                            break
+                    self.assertTrue(entity.dxf.layer == "Заполнение")
                 else:
                     self.assertEqual(entity.dxf.layer, "Окна", f"Элемент блока {entity.dxftype()} должен быть на слое 'Окна'")
             elif entity.dxftype() == "LINE":
@@ -123,9 +140,14 @@ class TestWindowExport(unittest.TestCase):
                 self.assertEqual(entity.dxf.layer, "Размеры", f"DIMENSION должен быть на слое 'Размеры'")
                 self.assertIn(entity.dxf.dimstyle, ("Основной стиль", "Основной стиль с точками"), "DIMENSION стиль должен быть 'Основной стиль' или 'Основной стиль с точками'")
             elif entity.dxftype() == "TEXT":
-                # Текст площади на Текст
-                self.assertEqual(entity.dxf.layer, "Текст", f"TEXT должен быть на Текст")
-                self.assertIn(entity.dxf.style, ("Основной стиль", "Основной стиль (для надписей)"), "TEXT стиль должен быть Основной стиль или Основной стиль (для надписей)")
+                if entity.dxf.layer == "Заполнение":
+                    self.assertIn("х", entity.dxf.text, "Текст заполнения должен содержать 'х'")
+                    self.assertIn(entity.dxf.text, filling_texts, "Текст заполнения должен совпадать с моделью")
+                    self.assertIn(entity.dxf.style, ("WindowStyle", "Основной стиль", "Основной стиль (для надписей)"))
+                else:
+                    # Текст площади на Текст
+                    self.assertEqual(entity.dxf.layer, "Текст", f"TEXT должен быть на Текст")
+                    self.assertIn(entity.dxf.style, ("Основной стиль", "Основной стиль (для надписей)"), "TEXT стиль должен быть Основной стиль или Основной стиль (для надписей)")
             else:
                 # ATTDEF — на Текст, стиль Основной стиль
                 if entity.dxftype() in ("ATTDEF", "MTEXT"):

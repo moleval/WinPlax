@@ -30,6 +30,7 @@ except Exception:
 BASE_PARAMS = {
     "version": "0.2",
     "window_name": "ОК-1",
+    "system": "ABSTRACT_60_80_25",
     "opening": {"width": 1500, "height": 1500, "seam": 30},
     "frame": {"face_width": 60, "face_height": 60},
     "mullion": {"width": 80, "height": 80, "continuous": "auto"},
@@ -192,15 +193,50 @@ def make_examples():
     # Диверсификация сплошного импоста и штапика для наглядности
     # Пример 05 (3x2) — auto (квадрат -> vertical), Пример 07 (3x3) — vertical принудительно
     # Пример 08 (4x3) — horizontal, Пример 10 (8x4) — auto, Пример 11 — vertical широкий импост
-    if len(ex) >= 7:
+    if len(ex) >= 11:
         ex[4]["mullion"]["continuous"] = "auto"  # 3x2 квадрат -> vertical
         ex[6]["mullion"]["continuous"] = "vertical"
         ex[7]["mullion"]["continuous"] = "horizontal"
         ex[9]["mullion"]["continuous"] = "auto"
         ex[10]["mullion"]["continuous"] = "vertical"
-        ex[10]["mullion"]["width"] = 100; ex[10]["mullion"]["height"] = 100
         # Штапик: по умолчанию 25, для примера 11 — 20 мм, пример 06 — 30 мм
-        ex[5]["bead"] = {"width": 30}
+        # сохраняем после переназначения системы
+        bead_06 = ex[5].get("bead", {"width": 30})
+        bead_11 = ex[10].get("bead", {"width": 20})
+
+    # Три системы на старте: ABSTRACT / REHAU GRAZIO / EXPROF Profecta S571
+    # 01-04 ABSTRACT, 05-08 REHAU, 09-12 EXPROF
+    if len(ex) >= 12:
+        for i in [0,1,2,3]:
+            ex[i]["system"] = "ABSTRACT_60_80_25"
+        for i in [4,5,6,7]:
+            ex[i]["system"] = "REHAU_GRAZIO_70"
+            ex[i]["frame"] = {"face_width": 63, "face_height": 63}
+            # сохраняем continuous
+            cont = ex[i]["mullion"].get("continuous", "auto")
+            ex[i]["mullion"] = {"width": 76, "height": 76, "continuous": cont}
+            ex[i]["sash"] = {"overlap": 5, "profile_width": 80}
+            if i == 5:
+                ex[i]["bead"] = {"width": 14.5}  # GRAZIO 14.5 для СП32, 06 оставим 14.5 (был 30 -> теперь 14.5)
+                # но для наглядности оставим 14.5
+            else:
+                ex[i]["bead"] = {"width": 14.5}
+        # для 06 вернем 30 как было задумано для демо разных штапиков (перекрываем REHAU 14.5)
+        if len(ex) > 5:
+            ex[5]["bead"] = {"width": 30}
+        for i in [8,9,10,11]:
+            ex[i]["system"] = "EXPROF_PROFECTA_S571_70"
+            ex[i]["frame"] = {"face_width": 60, "face_height": 60}
+            cont = ex[i]["mullion"].get("continuous", "auto")
+            # для 11 оставим широкий 100 как демо
+            if i == 10:
+                # ex[10] уже vertical 100
+                ex[i]["mullion"] = {"width": 100, "height": 100, "continuous": cont}
+            else:
+                ex[i]["mullion"] = {"width": 74, "height": 74, "continuous": cont}
+            ex[i]["sash"] = {"overlap": 8, "profile_width": 80}
+            ex[i]["bead"] = {"width": 20}
+        # 11 отдельно 20 уже
         ex[10]["bead"] = {"width": 20}
 
     return ex

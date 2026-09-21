@@ -245,6 +245,84 @@ def load_params(path: str | Path) -> dict[str, Any]:
         return json.load(f)
 
 
+def _load_profiles() -> dict[str, Any]:
+    """Загрузка profiles.json рядом со скриптом, кэш не делаем для простоты."""
+    p = Path(__file__).parent / "profiles.json"
+    if not p.is_file():
+        # также рядом с cwd
+        p2 = Path("profiles.json")
+        if p2.is_file():
+            p = p2
+        else:
+            return {}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            # поддерживаем как {"SYSTEM": {...}} так и {"systems": {...}}
+            if "systems" in data and isinstance(data["systems"], dict):
+                return data["systems"]
+            return data
+    except Exception:
+        return {}
+
+
+def _get_system_profile(params: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
+    """Возвращает (имя системы, профиль) или (None, None) если система не указана/не найдена."""
+    sys_name = params.get("system") or params.get("profile") or params.get("profile_system")
+    if not sys_name:
+        return None, None
+    sys_name = str(sys_name).strip()
+    profiles = _load_profiles()
+    if not profiles:
+        return sys_name, None
+    prof = profiles.get(sys_name)
+    # также пробуем без суффикса _70
+    if prof is None:
+        # поиск по без регистра
+        for k, v in profiles.items():
+            if k.lower() == sys_name.lower():
+                return k, v
+    return sys_name, prof
+
+
+def _resolve_bead_from_profile(profile: dict[str, Any] | None, params: dict[str, Any]) -> float | None:
+    """Определяет эффективную ширину штапика из профиля с учётом params override."""
+    # если в params явно задан bead — приоритет у params (обрабатывается в validate/build отдельно)
+    # здесь только профиль
+    if profile is None:
+        return None
+    bv = profile.get("bead")
+    # bead может быть числом, массивом [6.5,14.5], строкой S358
+    if isinstance(bv, (int, float)):
+        return float(bv)
+    if isinstance(bv, list) and bv:
+        # есть bead_default?
+        bd = profile.get("bead_default", profile.get("bead_width", bv[0]))
+        try:
+            return float(bd)
+        except Exception:
+            try:
+                return float(bv[0])
+            except Exception:
+                return None
+    if isinstance(bv, str):
+        # S358 -> использовать bead_default/bead_width
+        bd = profile.get("bead_default", profile.get("bead_width", profile.get("bead_width_default")))
+        if bd is not None:
+            try:
+                return float(bd)
+            except Exception:
+                pass
+        return None
+    # также поддержка bead_width ключа
+    if "bead_width" in profile:
+        try:
+            return float(profile["bead_width"])
+        except Exception:
+            pass
+    return None
+
+
 def validate(params: dict[str, Any]) -> list[str]:
     """
     Валидация параметров окна перед построением модели.
@@ -254,13 +332,29 @@ def validate(params: dict[str, Any]) -> list[str]:
     """
     errors: list[str] = []
 
-    # 1. Проверка обязательных секций
-    for req_key in ("opening", "frame", "cols", "rows"):
+    # 1. Проверка обязательных секций (frame может прийти из системы)
+    sys_name_tmp0, sys_prof_tmp0 = _get_system_profile(params)
+    for req_key in ("opening", "cols", "rows"):
         if req_key not in params:
             errors.append(f"Отсутствует обязательная секция '{req_key}'")
+    # frame обязателен если нет системы или система не дает frame
+    if "frame" not in params:
+        has_frame_from_sys = False
+        if sys_prof_tmp0 is not None:
+            if any(k in sys_prof_tmp0 for k in ("frame", "frame_face_width", "frame_face_height")):
+                has_frame_from_sys = True
+        if not has_frame_from_sys:
+            errors.append("Отсутствует обязательная секция 'frame'")
 
     if errors:
         return errors
+
+    # 1b. Система профилей (переключатель ABSTRACT / REHAU GRAZIO / EXPROF Profecta)
+    sys_name, sys_prof = _get_system_profile(params)
+    if sys_name is not None and sys_prof is None:
+        profiles = _load_profiles()
+        available = ", ".join(sorted(profiles.keys())) if profiles else "—"
+        errors.append(f"Система профилей '{sys_name}' не найдена. Доступно: {available}")
 
     # 2. Имя окна
     window_name = params.get("window_name") or params.get("metadata", {}).get("window_name", "")
@@ -280,10 +374,27 @@ def validate(params: dict[str, Any]) -> list[str]:
     if seam is None or seam < 0:
         errors.append("Монтажный шов (opening.seam) должен быть >= 0")
 
-    # 4. Профиль рамы
+    # 4. Профиль рамы (с учётом системы)
     frame = params.get("frame", {})
     fw = frame.get("face_width")
     fh = frame.get("face_height")
+    if fw is None and sys_prof is not None:
+        fw = sys_prof.get("frame", sys_prof.get("frame_face_width", sys_prof.get("frame_face_height")))
+        try:
+            fw = float(fw) if fw is not None else None
+        except Exception:
+            fw = None
+    if fh is None and sys_prof is not None:
+        fh = sys_prof.get("frame_face_height", sys_prof.get("frame", sys_prof.get("frame_face_width")))
+        try:
+            fh = float(fh) if fh is not None else None
+        except Exception:
+            fh = None
+    # если и после системы нет — fallback на fw/fh друг друга
+    if fh is None and fw is not None:
+        fh = fw
+    if fw is None and fh is not None:
+        fw = fh
 
     if fw is None or fw <= 0:
         errors.append("Ширина профиля рамы (frame.face_width) должна быть > 0")
@@ -313,10 +424,42 @@ def validate(params: dict[str, Any]) -> list[str]:
     if not isinstance(rows, int) or rows < 1:
         errors.append("Количество строк (rows) должно быть целым числом >= 1")
 
-    # 7. Импосты
+    # 7. Импосты (с учётом системы)
     mullion = params.get("mullion", {})
-    mw = mullion.get("width", 0)
-    mh = mullion.get("height", 0)
+    mw = mullion.get("width", None)
+    mh = mullion.get("height", None)
+    # fallback из системы
+    if mw is None and sys_prof is not None:
+        mw = sys_prof.get("mullion", sys_prof.get("mullion_width", sys_prof.get("mullion_height")))
+        try:
+            mw = float(mw) if mw is not None else 0
+        except Exception:
+            mw = 0
+    if mh is None and sys_prof is not None:
+        mh = sys_prof.get("mullion_height", sys_prof.get("mullion", sys_prof.get("mullion_width")))
+        try:
+            mh = float(mh) if mh is not None else 0
+        except Exception:
+            mh = 0
+    if mw is None:
+        mw = 0
+    else:
+        try:
+            mw = float(mw)
+        except Exception:
+            mw = 0
+    if mh is None:
+        mh = 0
+    else:
+        try:
+            mh = float(mh)
+        except Exception:
+            mh = 0
+    # если высота не задана — как ширина
+    if mh == 0 and mw != 0:
+        mh = mw
+    if mw == 0 and mh != 0:
+        mw = mh
     if mw < 0:
         errors.append("Ширина импоста (mullion.width) должна быть >= 0")
     if mh < 0:
@@ -356,6 +499,11 @@ def validate(params: dict[str, Any]) -> list[str]:
             bead_width = float(params["bead_width"])
         except Exception:
             pass
+    # fallback из системы
+    if bead_width is None and sys_prof is not None:
+        bw_prof = _resolve_bead_from_profile(sys_prof, params)
+        if bw_prof is not None:
+            bead_width = bw_prof
     if bead_width is None:
         bead_width = 25.0  # по умолчанию
     else:
@@ -430,14 +578,30 @@ def validate(params: dict[str, Any]) -> list[str]:
         if sh <= 0:
             errors.append("Высота подставочного профиля (sill.height) должна быть > 0")
 
-    # 11. Наплав створки
+    # 11. Наплав створки (с учётом системы)
     sash = params.get("sash", {})
-    so = sash.get("overlap", 0)
+    so = sash.get("overlap", None)
+    if so is None and sys_prof is not None:
+        so = sys_prof.get("overlap", sys_prof.get("sash_overlap", sys_prof.get("sash", {}).get("overlap") if isinstance(sys_prof.get("sash"), dict) else None))
+    if so is None:
+        so = 15 if sys_prof is None else (sys_prof.get("overlap", 15))
+    try:
+        so = float(so)
+    except Exception:
+        so = 15
     if so < 0:
         errors.append("Наплав створки (sash.overlap) должен быть >= 0")
 
-    # 12. Ширина бруска створки (profile_width) по ТЗ 0.2
-    pw = sash.get("profile_width", 80)
+    # 12. Ширина бруска створки (profile_width) по ТЗ 0.2 (с учётом системы)
+    pw = sash.get("profile_width", None)
+    if pw is None and sys_prof is not None:
+        pw = sys_prof.get("sash_profile_width", sys_prof.get("sash", sys_prof.get("profile_width", 80)))
+        if pw is None:
+            pw = sys_prof.get("sash", 80)
+            if isinstance(pw, dict):
+                pw = pw.get("profile_width", 80)
+    if pw is None:
+        pw = 80
     if pw is not None:
         try:
             pw_f = float(pw)
@@ -789,17 +953,75 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     oh = float(params["opening"]["height"])
     s = float(params["opening"]["seam"])
 
-    fw = float(params["frame"]["face_width"])
-    fh = float(params["frame"]["face_height"])
+    # Система профилей — разрешаем значения из profiles.json как дефолты
+    _sys_name_tmp, _sys_prof_tmp = _get_system_profile(params)
+    # frame с учётом системы
+    try:
+        fw = float(params["frame"]["face_width"])
+    except Exception:
+        if _sys_prof_tmp is not None:
+            fw = float(_sys_prof_tmp.get("frame", _sys_prof_tmp.get("frame_face_width", 60)))
+        else:
+            fw = 60.0
+    try:
+        fh = float(params["frame"]["face_height"])
+    except Exception:
+        if _sys_prof_tmp is not None:
+            fh = float(_sys_prof_tmp.get("frame_face_height", _sys_prof_tmp.get("frame", fw)))
+        else:
+            fh = float(fw)
 
-    mw = float(params.get("mullion", {}).get("width", 0))
-    mh = float(params.get("mullion", {}).get("height", 0))
+    # mullion с учётом системы
+    try:
+        mw = float(params.get("mullion", {}).get("width", None))
+        if mw is None:
+            raise KeyError
+    except Exception:
+        if _sys_prof_tmp is not None:
+            mw = float(_sys_prof_tmp.get("mullion", _sys_prof_tmp.get("mullion_width", 80)))
+        else:
+            mw = 80.0
+    try:
+        mh = float(params.get("mullion", {}).get("height", None))
+        if mh is None:
+            raise KeyError
+    except Exception:
+        if _sys_prof_tmp is not None:
+            mh = float(_sys_prof_tmp.get("mullion_height", _sys_prof_tmp.get("mullion", mw)))
+        else:
+            mh = float(mw)
 
     cols = int(params["cols"])
     rows = int(params["rows"])
 
-    so = float(params.get("sash", {}).get("overlap", 15))
-    sw = float(params.get("sash", {}).get("profile_width", 80))
+    # sash с учётом системы
+    try:
+        so = float(params.get("sash", {}).get("overlap", None))
+        if so is None:
+            raise KeyError
+    except Exception:
+        if _sys_prof_tmp is not None and "overlap" in _sys_prof_tmp:
+            so = float(_sys_prof_tmp.get("overlap", 15))
+        elif _sys_prof_tmp is not None and "sash_overlap" in _sys_prof_tmp:
+            so = float(_sys_prof_tmp.get("sash_overlap", 15))
+        else:
+            so = 15.0
+    try:
+        sw = float(params.get("sash", {}).get("profile_width", None))
+        if sw is None:
+            raise KeyError
+    except Exception:
+        if _sys_prof_tmp is not None:
+            # пробуем разные ключи
+            sw_cand = _sys_prof_tmp.get("sash_profile_width", _sys_prof_tmp.get("sash", _sys_prof_tmp.get("profile_width", 80)))
+            if isinstance(sw_cand, dict):
+                sw_cand = sw_cand.get("profile_width", 80)
+            try:
+                sw = float(sw_cand)
+            except Exception:
+                sw = 80.0
+        else:
+            sw = 80.0
 
     window_name = str(params.get("window_name") or params.get("metadata", {}).get("window_name", "ОК-1")).strip()
 
@@ -1027,6 +1249,15 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
             bead_width_val = float(params["bead"])
         except Exception:
             bead_width_val = 25.0
+    # fallback из системы профилей если в params нет явного bead
+    if bead_src is None and "bead" not in params and "shtapik" not in params and "bead_width" not in params and "shtapik_width" not in params:
+        if _sys_prof_tmp is not None:
+            bw_prof = _resolve_bead_from_profile(_sys_prof_tmp, params)
+            if bw_prof is not None:
+                try:
+                    bead_width_val = float(bw_prof)
+                except Exception:
+                    pass
     # защита от отрицательных/невалидных уже в validate, но на всякий
     if bead_width_val is None or bead_width_val < 0:
         bead_width_val = 25.0
@@ -1334,7 +1565,41 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
                 bead_polys.append([(sx2 - bw, sy1 + bw), (sx2, sy1 + bw), (sx2, sy2 - bw), (sx2 - bw, sy2 - bw)])
             except Exception:
                 pass
+    # 7d. Заполнение — справочный контур стеклопакета, непечатный слой Заполнение
+    fillings: list[dict[str, Any]] = []
+    filling_polys: list[list[tuple[float, float]]] = []
+    filling_texts: list[tuple[tuple[float, float], str]] = []
+    try:
+        for cell in cells:
+            sash = next((s for s in sashes if tuple(s.get("cell", ())) == (cell["row"], cell["col"])), None)
+            if sash is not None and sash.get("inner_rect"):
+                rx1, ry1, rx2, ry2 = sash["inner_rect"]
+            else:
+                rx1, ry1, rx2, ry2 = cell["x1"], cell["y1"], cell["x2"], cell["y2"]
+            rx1, rx2 = (min(float(rx1), float(rx2)), max(float(rx1), float(rx2)))
+            ry1, ry2 = (min(float(ry1), float(ry2)), max(float(ry1), float(ry2)))
+            bw_f = float(bead_width_val) if bead_width_val else 0.0
+            fx1 = rx1 + bw_f
+            fy1 = ry1 + bw_f
+            fx2 = rx2 - bw_f
+            fy2 = ry2 - bw_f
+            if fx2 - fx1 < 10 or fy2 - fy1 < 10:
+                continue
+            poly = [(fx1, fy1), (fx2, fy1), (fx2, fy2), (fx1, fy2)]
+            filling_polys.append(poly)
+            w = fx2 - fx1
+            h = fy2 - fy1
+            w_s = f"{int(w) if float(w).is_integer() else round(w,1)}"
+            h_s = f"{int(h) if float(h).is_integer() else round(h,1)}"
+            txt = f"{w_s}х{h_s}"
+            tx = fx1 + 8
+            ty = fy1 + 8
+            fillings.append({"cell": (cell["row"], cell["col"]), "rect": (fx1, fy1, fx2, fy2), "poly": poly, "w": w, "h": h, "text": txt, "pos": (tx, ty)})
+            filling_texts.append(((tx, ty), txt))
+    except Exception:
+        pass
     primitives_count += len(bead_polys)  # штапик — LWPOLYLINE
+    # заполнения на непечатном слое — в primitives не считаем (справочные)
     primitives_count += len(attdefs)  # ATTDEF
 
     return {
@@ -1360,6 +1625,11 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
         "addons_info": addons_info,
         "bead_width": bead_width_val,
         "bead_polys": bead_polys,
+        "fillings": fillings,
+        "filling_polys": filling_polys,
+        "filling_texts": filling_texts,
+        "system": _sys_name_tmp,
+        "profile": _sys_prof_tmp,
         "attdefs": attdefs,
         "primitives_count": primitives_count,
     }
@@ -1483,6 +1753,35 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
                 style.dxf.font = "Arial.ttf"
         except Exception:
             pass
+
+    # 2c. Слой Заполнение — справочный, непечатный/скрытый для контуров СП и размеров заполнений
+    layer_fill = "Заполнение"
+    if layer_fill not in doc.layers:
+        try:
+            doc.layers.add(layer_fill, color=6)
+        except Exception:
+            try:
+                doc.layers.add(layer_fill, color=6, linetype="Continuous")
+            except Exception:
+                pass
+    try:
+        lf = doc.layers.get(layer_fill)
+        try:
+            lf.dxf.plot = 0
+        except Exception:
+            pass
+        try:
+            lf.is_plottable = False
+        except Exception:
+            pass
+        # оставляем включенным, но непечатным
+        try:
+            lf.is_off = False
+            lf.is_frozen = False
+        except Exception:
+            pass
+    except Exception:
+        pass
 
     # 3. Создание определения блока
     blk = doc.blocks.new(model["block_name"])
@@ -1681,6 +1980,29 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
                     close=True,
                     dxfattribs={"layer": layer_name},
                 )
+        except Exception:
+            pass
+
+    # 9d. Заполнение — справочный контур и размер в левом нижнем углу заполнения (слой Заполнение, непечатный)
+    for poly in model.get("filling_polys", []):
+        try:
+            blk.add_lwpolyline(poly, close=True, dxfattribs={"layer": layer_fill})
+        except Exception:
+            pass
+    for (tx, ty), txt in model.get("filling_texts", []):
+        try:
+            # высота 16, как у площади но меньше, стиль WindowStyle уже создан в 2b
+            fill_style = "WindowStyle"
+            if fill_style not in doc.styles:
+                fill_style = "Основной стиль (для надписей)" if "Основной стиль (для надписей)" in doc.styles else "WindowStyle"
+            t = blk.add_text(txt, height=16, dxfattribs={"layer": layer_fill, "style": fill_style})
+            t.dxf.insert = (tx, ty, 0)
+            t.dxf.halign = 0
+            t.dxf.valign = 0
+            try:
+                t.dxf.align_point = (tx, ty, 0)
+            except Exception:
+                pass
         except Exception:
             pass
 
