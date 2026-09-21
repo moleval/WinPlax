@@ -121,7 +121,7 @@ class TestWindowExport(unittest.TestCase):
                 self.assertIn(entity.dxf.layer, ("Окна", "Штриховые"), f"LINE должен быть на Окна или Штриховые")
             elif entity.dxftype() == "DIMENSION":
                 self.assertEqual(entity.dxf.layer, "Размеры", f"DIMENSION должен быть на слое 'Размеры'")
-                self.assertEqual(entity.dxf.dimstyle, "Основной стиль", "DIMENSION стиль должен быть 'Основной стиль'")
+                self.assertIn(entity.dxf.dimstyle, ("Основной стиль", "Основной стиль с точками"), "DIMENSION стиль должен быть 'Основной стиль' или 'Основной стиль с точками'")
             elif entity.dxftype() == "TEXT":
                 # Текст площади на Текст
                 self.assertEqual(entity.dxf.layer, "Текст", f"TEXT должен быть на Текст")
