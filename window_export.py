@@ -1963,6 +1963,40 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:
         print(f"  Не удалось сформировать вид изнутри: {e}")
 
+    # Все примеры — также по команде python window_export.py (требование: все примеры в DWG)
+    try:
+        # Импортируем генератор примеров и собираем все 12 в один файл
+        import generate_examples as _ge
+        examples = _ge.make_examples()
+        out_all = Path("output") / "Все_примеры.dxf"
+        # Используем тот же шаблон, что и для одиночного
+        _ge.export_all_to_one(examples, str(out_all), template_path=tpl_path)
+        # Конвертация всех примеров в DWG (если ODA есть — .dxf удалится, останется .dwg)
+        dwg_all = convert_to_dwg(out_all)
+        if dwg_all and Path(dwg_all).is_file():
+            print(f"  Все примеры конвертированы в DWG: {dwg_all}")
+            # Перечень уже выводит generate_examples, но продублируем кратко
+            try:
+                import ezdxf
+                _doc = ezdxf.readfile(dwg_all if Path(dwg_all).exists() else out_all)
+            except Exception:
+                pass
+        # Также выведем перечень из свежего файла
+        try:
+            import ezdxf as _ez
+            _f = out_all if out_all.exists() else Path(str(out_all).replace(".dxf", ".dwg"))
+            # Если остался DWG, перечень из DXF уже удалён — читаем DWG через DXF? Пропустим
+            if out_all.exists():
+                _d = _ez.readfile(str(out_all))
+                print("  Перечень примеров из Все_примеры:")
+                for i, ins in enumerate(_d.modelspace().query("INSERT")):
+                    print(f"    {i+1:02d}. {ins.dxf.name}")
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"  Не удалось собрать все примеры: {e}")
+        import traceback; traceback.print_exc()
+
     return 0
 
 
