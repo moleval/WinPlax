@@ -32,7 +32,8 @@ BASE_PARAMS = {
     "window_name": "ОК-1",
     "opening": {"width": 1500, "height": 1500, "seam": 30},
     "frame": {"face_width": 60, "face_height": 60},
-    "mullion": {"width": 80, "height": 80},
+    "mullion": {"width": 80, "height": 80, "continuous": "auto"},
+    "bead":    {"width": 25},
     "sash": {"overlap": 15, "profile_width": 80},
     "sill": {"on": True, "height": 30},
     "addons": {"left": 0, "right": 0, "top": 0},
@@ -187,6 +188,20 @@ def make_examples():
             pp["view"] = "INSIDE"
         else:
             pp["view"] = "OUTSIDE"
+
+    # Диверсификация сплошного импоста и штапика для наглядности
+    # Пример 05 (3x2) — auto (квадрат -> vertical), Пример 07 (3x3) — vertical принудительно
+    # Пример 08 (4x3) — horizontal, Пример 10 (8x4) — auto, Пример 11 — vertical широкий импост
+    if len(ex) >= 7:
+        ex[4]["mullion"]["continuous"] = "auto"  # 3x2 квадрат -> vertical
+        ex[6]["mullion"]["continuous"] = "vertical"
+        ex[7]["mullion"]["continuous"] = "horizontal"
+        ex[9]["mullion"]["continuous"] = "auto"
+        ex[10]["mullion"]["continuous"] = "vertical"
+        ex[10]["mullion"]["width"] = 100; ex[10]["mullion"]["height"] = 100
+        # Штапик: по умолчанию 25, для примера 11 — 20 мм, пример 06 — 30 мм
+        ex[5]["bead"] = {"width": 30}
+        ex[10]["bead"] = {"width": 20}
 
     return ex
 

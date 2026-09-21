@@ -354,7 +354,7 @@ class TestWindowExport(unittest.TestCase):
                 os.remove(tmp_path)
 
     def test_13_grid_8x4(self):
-        """Сценарий 13: Сетка 8×4: Замыкание сетки, 7 верт. и 3 гор. импоста, без ошибок"""
+        """Сценарий 13: Сетка 8×4: Замыкание сетки, импосты с учётом сплошного направления, без ошибок"""
         p84 = copy.deepcopy(self.params)
         p84["opening"]["width"] = 6000
         p84["opening"]["height"] = 3000
@@ -369,8 +369,19 @@ class TestWindowExport(unittest.TestCase):
         obj84 = str(p84.get("metadata", {}).get("object", "Тестовый объект")); wn84 = str(p84.get("window_name","ОК-1"))
         view84 = "Снаружи" if str(p84.get("view","OUTSIDE")).upper()=="OUTSIDE" else "Изнутри"
         self.assertEqual(m84["block_name"], f"{obj84} {wn84} {size84} {view84}")
-        self.assertEqual(len(m84["mullions_v"]), 7)
-        self.assertEqual(len(m84["mullions_h"]), 3)
+        # С учётом сплошного импоста: по умолчанию auto — сплошной по наименьшей стороне
+        # 8x4 при 6000x3000 => grid_w > grid_h => vertical сплошной (7 целых), horizontals режутся на cols сегментов
+        cont = m84.get("mullion_continuous", "vertical")
+        if cont == "vertical":
+            self.assertEqual(len(m84["mullions_v"]), 7, "Вертикалей должно быть 7 (сплошные)")
+            self.assertEqual(len(m84["mullions_h"]), 3 * 8, "Горизонтали должны быть порезаны: 3 ряда * 8 сегментов = 24")
+        elif cont == "horizontal":
+            self.assertEqual(len(m84["mullions_h"]), 3, "Горизонталей должно быть 3 (сплошные)")
+            self.assertEqual(len(m84["mullions_v"]), 7 * 4, "Вертикали порезаны: 7 * 4 сегмента")
+        else:
+            # fallback — старый полный count
+            self.assertIn(len(m84["mullions_v"]), (7, 7*4))
+            self.assertIn(len(m84["mullions_h"]), (3, 3*8))
         with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as tmp:
             tmp_path = tmp.name
         try:
@@ -583,6 +594,144 @@ class TestWindowExport(unittest.TestCase):
                         found_sill = True
                         break
             self.assertTrue(found_sill, "Подставочный профиль должен присутствовать")
+
+    def test_16_mullion_continuous(self):
+        """Сценарий 16: Сплошной импост — auto по наименьшей стороне + ручной переключатель vertical/horizontal, делёный режется"""
+        base = copy.deepcopy(self.params)
+        base["cols"] = 3; base["rows"] = 2
+        base["opening"]["width"] = 1500; base["opening"]["height"] = 1500
+        # Квадрат 1500х1500 => auto => vertical (tie-break)
+        base["mullion"] = {"width": 80, "height": 80, "continuous": "auto"}
+        m_auto_sq = build_window_model(base)
+        self.assertEqual(m_auto_sq["mullion_continuous"], "vertical", "Квадрат -> vertical (tie-break)")
+        self.assertEqual(len(m_auto_sq["mullions_v"]), 2, "Vertical сплошной: 2 целых")
+        self.assertEqual(len(m_auto_sq["mullions_h"]), 3, "Horizontal режется: 1*3 сегмента")
+
+        # Широкий проём 2000х1000 => grid_w > grid_h => vertical сплошной
+        wide = copy.deepcopy(base)
+        wide["opening"] = {"width": 2000, "height": 1000, "seam": 30}
+        wide["mullion"]["continuous"] = "auto"
+        m_wide = build_window_model(wide)
+        self.assertEqual(m_wide["mullion_continuous"], "vertical")
+
+        # Узкий высокий 1000х2000 => grid_w < grid_h => horizontal сплошной
+        tall = copy.deepcopy(base)
+        tall["opening"] = {"width": 1000, "height": 2000, "seam": 30}
+        tall["cols"] = 2; tall["rows"] = 4
+        tall["mullion"]["continuous"] = "auto"
+        m_tall = build_window_model(tall)
+        self.assertEqual(m_tall["mullion_continuous"], "horizontal", "Высокий => horizontal сплошной")
+        self.assertEqual(len(m_tall["mullions_h"]), 3, "Horizontal сплошной: 3 целых")
+        self.assertEqual(len(m_tall["mullions_v"]), 1 * 4, "Vertical режется: 1*4 сегмента")
+
+        # Ручной переключатель переопределяет auto
+        forced_v = copy.deepcopy(tall)
+        forced_v["mullion"]["continuous"] = "vertical"
+        m_fv = build_window_model(forced_v)
+        self.assertEqual(m_fv["mullion_continuous"], "vertical")
+        self.assertEqual(len(m_fv["mullions_v"]), 1)
+        self.assertEqual(len(m_fv["mullions_h"]), 6)  # 3*2 сегмента
+
+        forced_h = copy.deepcopy(tall)
+        forced_h["mullion"]["continuous"] = "horizontal"
+        m_fh = build_window_model(forced_h)
+        self.assertEqual(m_fh["mullion_continuous"], "horizontal")
+        self.assertEqual(len(m_fh["mullions_h"]), 3)
+        self.assertEqual(len(m_fh["mullions_v"]), 4)
+
+        # Проверка что делёные импосты не пересекают сплошные (разрыв)
+        for hv_poly in m_tall["mullions_v"]:
+            xs = [p[0] for p in hv_poly]; ys = [p[1] for p in hv_poly]
+            # вертикальный сегмент tall: должен заканчиваться до горизонтального импоста
+            # Проверим что его Y-интервал не пересекает ни один горизонтальный сплошной
+            y1, y2 = min(ys), max(ys)
+            for h_poly in m_tall["mullions_h"]:
+                hy = min(p[1] for p in h_poly)
+                hy2 = max(p[1] for p in h_poly)
+                # сегменты вертикали не должны пересекаться с горизонталью (разрыв)
+                self.assertTrue(y2 <= hy + 1e-6 or y1 >= hy2 - 1e-6, f"Вертикальный сегмент {hv_poly} не должен пересекать горизонталь {h_poly}")
+
+        # Валидация: недопустимое значение
+        bad = copy.deepcopy(base)
+        bad["mullion"]["continuous"] = "diagonal"
+        errs = validate(bad)
+        self.assertTrue(any("continuous" in e for e in errs))
+
+        # Алиасы v/h, вертикаль/горизонталь
+        for alias in ("v", "V", "вертикаль", "Horizontal", "h", "гор"):
+            alias_p = copy.deepcopy(base)
+            alias_p["mullion"]["continuous"] = alias
+            errs2 = validate(alias_p)
+            self.assertEqual(len([e for e in errs2 if "continuous" in e]), 0, f"Алиас {alias} должен валидироваться")
+
+    def test_17_bead(self):
+        """Сценарий 17: Штапик — единый параметр системы 25 мм по умолчанию, одинаков для рамы/импостов/створок, валидация"""
+        base = copy.deepcopy(self.params)
+        # По умолчанию 25
+        m_def = build_window_model(base)
+        self.assertEqual(m_def["bead_width"], 25.0)
+        self.assertGreater(len(m_def["bead_polys"]), 0, "Штапик должен генерировать полигоны по умолчанию")
+        # Рама: 4 полосы
+        # Считаем рамочные полосы (внутри frame_inner)
+        fxs = [p[0] for p in m_def["frame_inner"]]; fys = [p[1] for p in m_def["frame_inner"]]
+        fx1, fx2 = min(fxs), max(fxs); fy1, fy2 = min(fys), max(fys)
+        bw = m_def["bead_width"]
+        frame_beads = [poly for poly in m_def["bead_polys"] if min(p[0] for p in poly) >= fx1 -1e-6 and max(p[0] for p in poly) <= fx2+1e-6 and min(p[1] for p in poly) >= fy1-1e-6 and max(p[1] for p in poly) <= fy2+1e-6]
+        self.assertGreaterEqual(len(frame_beads), 4, "Для рамы должно быть минимум 4 полосы штапика")
+
+        # Пользователь задаёт другое значение
+        custom = copy.deepcopy(base)
+        custom["bead"] = {"width": 20}
+        m_cust = build_window_model(custom)
+        self.assertEqual(m_cust["bead_width"], 20.0)
+        errs_cust = validate(custom)
+        self.assertEqual(len([e for e in errs_cust if "штапика" in e]), 0)
+
+        # Алиасы shtapik / bead_width / shtapik_width
+        for key, val in [("shtapik", 22), ("bead_width", 18), ("shtapik_width", 15)]:
+            ali = copy.deepcopy(base)
+            if key in ("shtapik", "bead"):
+                ali[key] = {"width": val} if key in ("shtapik", "bead") else val
+                # для простоты — top-level число
+                if key in ("shtapik", "bead") and isinstance(ali[key], int):
+                    pass
+            ali.pop("bead", None)
+            ali[key] = val
+            m_ali = build_window_model(ali)
+            self.assertEqual(m_ali["bead_width"], float(val))
+            self.assertEqual(len(validate(ali)), 0)
+
+        # Штапик как число top-level
+        num = copy.deepcopy(base); num.pop("bead", None); num["shtapik"] = 25
+        self.assertEqual(build_window_model(num)["bead_width"], 25.0)
+        num2 = copy.deepcopy(base); num2.pop("bead", None); num2["bead_width"] = 30
+        self.assertEqual(build_window_model(num2)["bead_width"], 30.0)
+
+        # Валидация: отрицательный и превышающий раму
+        bad_neg = copy.deepcopy(base); bad_neg["bead"] = {"width": -5}
+        self.assertTrue(any("штапика" in e.lower() or "штапик" in e.lower() for e in validate(bad_neg)))
+        bad_big = copy.deepcopy(base); bad_big["frame"] = {"face_width": 60, "face_height": 60}; bad_big["bead"] = {"width": 70}
+        self.assertTrue(any("штапика" in e for e in validate(bad_big)))
+        # bead == 0 — отключен, полигонов 0
+        zero = copy.deepcopy(base); zero["bead"] = {"width": 0}
+        m_zero = build_window_model(zero)
+        self.assertEqual(len(m_zero["bead_polys"]), 0)
+
+        # Проверка DXF: штапик на слое Окна как LWPOLYLINE (OUTSIDE) или LINE (INSIDE)
+        with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            export_to_dxf(m_def, tmp_path)
+            doc = ezdxf.readfile(tmp_path)
+            blk = doc.blocks[m_def["block_name"]]
+            bead_found = any(e.dxftype() in ("LWPOLYLINE", "LINE") and e.dxf.layer == "Окна" for e in blk)
+            self.assertTrue(bead_found, "Штапик должен быть в DXF на слое Окна")
+            # Считаем что LWPOLYLINE количество увеличилось на bead
+            # primitives_count должен включать bead
+            self.assertGreater(m_def["primitives_count"], 10)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
 
 if __name__ == "__main__":

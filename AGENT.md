@@ -15,26 +15,26 @@
 WinPlax/
 ├─ window_export.py        # ядро: validate/build/export/convert, CLI
 ├─ generate_examples.py    # 12 примеров → output/Все_примеры.dxf/.dwg
-├─ params.json             # эталон 3×2 (ТЗ 0.2), view OUTSIDE
-├─ test_window_export.py   # 15 тестов ТЗ v0.2+ (замыкание, слои, стили, INSIDE/OUTSIDE)
+├─ params.json             # эталон 3×2 (ТЗ 0.2+), view OUTSIDE, bead 25, mullion continuous auto
+├─ test_window_export.py   # 17 тестов ТЗ v0.2+ (замыкание, слои, стили, INSIDE/OUTSIDE, continuous/bead)
 ├─ Шаблон.dxf              # пользовательский шаблон (слои/стили/размерные, LTSCALE 25)
 ├─ template_tool.py        # утилиты шаблона
 ├─ output/                 # результаты: ОК-1.dxf/.dwg, ОК-1_INSIDE.*, Все_примеры.*
 ├─ README.md               # пользовательское руководство (устаревает → см. ТЗ.md)
 ├─ AGENT.md                # этот файл
-└─ ТЗ.md                   # техзадание v0.2+дополнения
+└─ ТЗ.md                   # техзадание v0.2+дополнения (актуально 2026-09-21)
 ```
 
 ## 3. Технологический стек
 
 - **Python 3.10+** (проверено 3.11), **ezdxf ≥1.0** (`R2013/AC1027`, `ANSI_1251`).
 - **Шаблон**: DXF R2013; копируются слои, типы линий, текстовые/размерные стили, заголовок, блоки стрелок `_Dot*`. Если `Шаблон.dxf` есть — его настройки приоритетны, но `dimscale/dimtxt` форсируются.
-- **ODA File Converter** (winget `ODA.ODAFileConverter`) — поиск в `C:\Program Files\ODA\`, `LOCALAPPDATA\WinGet`, `PATH`; формат `ACAD2013 DWG 0 1 <имя>`.
+- **ODA File Converter** (winget `ODA.ODAFileConverter`) — поиск в `C:\\Program Files\\ODA\\`, `LOCALAPPDATA\\WinGet`, `PATH`; формат `ACAD2013 DWG 0 1 <имя>`.
 
 ## 4. Конвенции кода и CAD
 
 ### 4.1 Слои / типы линий / веса
-- `Окна` 7 `Continuous` — рама, импосты, створки (видимый контур), подставочник, доборы, блок.
+- `Окна` 7 `Continuous` — рама, импосты, створки (видимый контур), подставочник, доборы, штапик, блок.
 - `Штриховые` 7 `GOST2.303 4` вес 9 (0.09) — контур проёма `(0,0)-(OW,OH)`, масштаб 25 (`LTSCALE 25`).
 - `Размеры` 3 — все `DIMENSION`.
 - `Текст` 7 — `ATTDEF/ATTRIB/TEXT` (площадь), `Основной` 7 — совместимость.
@@ -55,6 +55,27 @@ WinPlax/
 - Площадь `S=… м²` в `(OW, OH+60)` `TOP_RIGHT`, `h=30`, тот же стиль/уровень что `GRID` (выровнены по Y).
 - Вставка блока в `ModelSpace (0,0)`, слой `Окна`, `1:1`.
 
+#### 4.3.1 Сплошной импост (переключатель мастера)
+- Параметр `mullion.continuous` (алиасы `continuous_impost`, `v/h`, `вертикаль/горизонталь`) — `auto` (по умолчанию) / `vertical` / `horizontal`.
+- `auto` => сплошной по **наименьшей стороне светового габарита** `grid_w = x1-x0`, `grid_h = y1-y0`:
+  - `grid_w < grid_h` (ширина меньше) → **горизонталь сплошная** на всю ширину `x0..x1`,
+  - `grid_w > grid_h` → **вертикаль сплошная** на всю высоту `y0..y1`,
+  - квадрат (равны с допуском 1e-9) → `vertical` (tie-break).
+- Больший (делёный) импост **режется на сегменты** между сплошными с разрывом `=mw/mh`, **без пересечения** (зазор равен толщине сплошного). Напр. `3×2` квадрат → `2` вертикали цельных + `1` горизонталь → `3` сегмента; `2×4` высокий → `3` горизонтали цельных + `1` вертикаль → `4` сегмента.
+- Ручной переключатель мастера: радио `Авто / Вертикаль / Горизонталь` переопределяет `auto` (запись `mullion.continuous = vertical|horizontal` в `params.json`).
+- В модели: `model["mullion_continuous"] == "vertical|horizontal"`, `model["mullions_v"]`/`mullions_h` уже сегментированы.
+
+#### 4.3.2 Штапик (единый для системы)
+- Параметр `bead` / `shtapik` / `bead_width` / `shtapik_width` — ширина штапика `bw` в мм, **одинаков для рамы, импостов, створок**, **по умолчанию `25.0`** (если ключ отсутствует).
+- Валидация: `float >=0`, `bw <= frame.face_width` (иначе ошибка `bead_width не должна превышать ширину рамы`), `bw > mullion width` — мягко (не ошибка, но полосы обрезаются до `mw/2`).
+- В модели: `model["bead_width"] == bw`, `model["bead_polys"]` — список прямоугольников-полос `bw` внутрь:
+  - рама: 4 полосы вдоль `frame_inner` (низ `y1..y1+bw`, верх `y2-bw..y2`, лево `x1..x1+bw` без углов, право `x2-bw..x2`);
+  - вертикальный импост: 2 полосы слева/справа толщиной `bw` на всю высоту сегмента;
+  - горизонтальный импост: 2 полосы снизу/сверху;
+  - створка: 4 полосы внутрь `inner_rect` (аналогично раме).
+- Для `bead_width == 0` — штапик отключён, `bead_polys == []`.
+- Отрисовка: `DXF LWPOLYLINE` на слое `Окна`; для `INSIDE` при наличии створок полосы рамы/импостов разбиваются на `LINE` и обрезаются `outer_rect` створок (аналогично раме).
+
 ### 4.4 Размеры — три цепочки (отступы 80/160/240, масштаб 4)
 - **1-я (-80 / +80)**: детализация ячеек + боковые доборы (отдельно) — `Основной стиль`.
 - **2-я (-160 / +160)**: габарит окна с доборами, подставочник (`+80` внутрь, с точками), верх. добор, **монтажные швы в одну линию со 2-й** (`y=-160`, `x=OW+160`) — **стиль с точками**.
@@ -62,7 +83,7 @@ WinPlax/
 - Гориз. привязка `y = horiz_ref_y` (низ подставочника/рамы), вертик. `x = overall_right` (или `frame_right`) справа.
 
 ### 4.5 Примитивы и подсчёт
-`opening 1 + frame 2+4 + mullions + sill 1 + addons + sashes (outer только INSIDE + inner 4 + mitres 4 + indicators 2/4) + attdefs 6`.
+`opening 1 + frame 2+4 + mullions (сегментированные) + sill 1 + addons + bead_polys + sashes (outer только INSIDE + inner 4 + mitres 4 + indicators 2/4) + attdefs 6`. `bead_polys` 4 (рама) + `2·len(mullions_v сегментов)` + `2·len(mullions_h сегментов)` + `4·len(sashes)` (если не нулевой `bw` и ячейка шире `2·bw`).
 
 ## 5. CLI и конвертация
 
@@ -76,15 +97,16 @@ python generate_examples.py [-t Шаблон.dxf] [-o output/Все_пример
 
 - `window_export.py` всегда: одиночный (+ `*_INSIDE` если `OUTSIDE`) + **Все_примеры** (12 блоков) при отсутствии `unittest` в `argv` (ezdxf тянет `unittest` в `sys.modules` — проверять `sys.argv`).
 - **Блокировка файла на Windows** (`PermissionError 13` при открытом превью/AutoCAD): перед `saveas` пытаться `unlink()`, при занятости — сохранять `*_new.dxf` с подсказкой, не падать с traceback; аналогично при удалении DXF после DWG.
+- Новые ключи: `mullion.continuous` и `bead.width` (или `shtapik`) — валидируются, попадают в `params.json` и `generate_examples` (диверсификация `auto/vertical/horizontal` и `bead 20/25/30`).
 
 ## 6. Тесты
 
 ```bash
-python -m unittest -v          # 15 тестов, ~9с
+python -m unittest -v          # 17 тестов, ~9с
 python -m unittest test_window_export.TestWindowExport.test_05_layer_okna
 ```
 
-Проверяют: `R2013/ANSI_1251`, `auditor.errors==[]`, замыкание `1e-6`, слои/стили, `dimstyle` ∈ {Основной, с точками}, `GRID 3х2` латиница, атрибуты `-200,OH` → теперь `(0,OH+60)` и `TOP_RIGHT` для площади, имя блока, ODA-ветку, `1×1`/`8×4`, `INSIDE/OUTSIDE` (`Continuous` vs `ByLayer`).
+Проверяют: `R2013/ANSI_1251`, `auditor.errors==[]`, замыкание `1e-6`, слои/стили, `dimstyle` ∈ {Основной, с точками}, `GRID 3х2` кириллица, атрибуты `(0,OH+60)` и `TOP_RIGHT` для площади, имя блока, ODA-ветку, `1×1`/`8×4` (с учётом сегментирования сплошного импоста), `INSIDE/OUTSIDE` (`Continuous` vs `ByLayer`), **сплошной импост** (`auto` по наименьшей стороне, переключатель, разрыв, алиасы) и **штапик** (`default 25`, алиасы, `>=0`, `<=FW`, полигоны, DXF слой).
 
 ## 7. Git-правила сессии Arena
 
@@ -99,6 +121,7 @@ python -m unittest test_window_export.TestWindowExport.test_05_layer_okna
 2. Правка через `edit_file`/`write_file`, проверка `py_compile`, прогон `python window_export.py` и `generate_examples.py`, `ezdxf readfile` на слой/стиль/координаты, `unittest`.
 3. При затрагивании размеров — проверять `defpoint` (база -80/-160/-240, +80/+160/+240) и `dimscale` обоих стилей.
 4. При работе с `Все_примеры` — учитывать блокировку Windows, возврат фактического пути `*_new`.
+5. Сплошной импост: проверять `grid_w vs grid_h`, `mullion_continuous`, что делёный не пересекает сплошной; штапик: `bead_width` 25 default, полосы 4+2·V+2·H+4·S.
 
 ## 9. Частые ловушки
 
@@ -107,6 +130,8 @@ python -m unittest test_window_export.TestWindowExport.test_05_layer_okna
 - `OW/OH` — кириллица `х` в `SIZE`/`GRID`, латиница `x` только в имени блока старой версии (сейчас кириллица везде).
 - `dimstyle с точками` должен существовать в шаблоне; если нет — `doc.dimstyles.new()` + синхронизация масштаба.
 - `output/Все_примеры.dxf` после DWG должен удаляться; при занятости — остаётся `_new`.
+- `mullion.continuous` — алиасы `v/h`, `вертикаль/горизонталь`; `auto` квадрат → `vertical`; делёный режется на `cols`/`rows` сегментов, не забывать `mullions_v/h` теперь списки сегментов, а не 1-1 к `cols-1/rows-1`.
+- `bead` — алиасы `shtapik`/`bead_width`/`shtapik_width` как число или `{width}`, default 25, `0` отключает; `bead_polys` добавляет примитивы, не забывать обновить `primitives_count` и DXF слой `Окна`.
 
 ## 10. Контакты и окружение
 

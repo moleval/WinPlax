@@ -321,6 +321,58 @@ def validate(params: dict[str, Any]) -> list[str]:
         errors.append("Ширина импоста (mullion.width) должна быть >= 0")
     if mh < 0:
         errors.append("Высота импоста (mullion.height) должна быть >= 0")
+    # Сплошной импост: auto / vertical / horizontal
+    cont = str(mullion.get("continuous", mullion.get("continuous_impost", "auto"))).strip().lower()
+    if cont not in ("auto", "vertical", "horizontal", "v", "h", "вертикаль", "горизонталь", "гор", "верт"):
+        errors.append("mullion.continuous должен быть auto / vertical / horizontal")
+    # Штапик (единый для системы, по умолчанию 25 мм)
+    # Поддержка ключей: bead, shtapik, bead_width, shtapik_width
+    bead_width = None
+    if "bead" in params:
+        bv = params["bead"]
+        if isinstance(bv, dict):
+            bead_width = bv.get("width", bv.get("value"))
+        else:
+            try:
+                bead_width = float(bv)
+            except Exception:
+                bead_width = None
+    if bead_width is None and "shtapik" in params:
+        sv = params["shtapik"]
+        if isinstance(sv, dict):
+            bead_width = sv.get("width", sv.get("value"))
+        else:
+            try:
+                bead_width = float(sv)
+            except Exception:
+                bead_width = None
+    if bead_width is None and "shtapik_width" in params:
+        try:
+            bead_width = float(params["shtapik_width"])
+        except Exception:
+            pass
+    if bead_width is None and "bead_width" in params:
+        try:
+            bead_width = float(params["bead_width"])
+        except Exception:
+            pass
+    if bead_width is None:
+        bead_width = 25.0  # по умолчанию
+    else:
+        try:
+            bead_width = float(bead_width)
+        except Exception:
+            errors.append("Ширина штапика (bead/shtapik) должна быть числом")
+            bead_width = 25.0
+    if bead_width is not None and bead_width < 0:
+        errors.append("Ширина штапика должна быть >= 0")
+    if bead_width is not None and bead_width > 0:
+        # Штапик не должен превышать профиль рамы/импоста/створки
+        if fw is not None and bead_width > fw:
+            errors.append(f"Ширина штапика ({bead_width}) не должна превышать ширину рамы ({fw})")
+        if mw is not None and bead_width > mw:
+            # для импоста это не критично, но предупредим мягко — не ошибка
+            pass
 
     # 8. Расчётные размеры ячеек
     if ow and oh and seam is not None and fw and fh and cols and rows and cols >= 1 and rows >= 1:
@@ -844,26 +896,140 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     strips_y = calc_strips_y(y0, cell_h, mh, rows)
     cells = calc_cells(strips_x, strips_y, params.get("cells", []), cols, rows)
 
-    # 5. Импосты
-    mullions_v: list[list[tuple[float, float]]] = []
-    for i in range(1, cols):
-        x = x0 + i * cell_w + (i - 1) * mw
-        mullions_v.append([
-            (x, y0),
-            (x + mw, y0),
-            (x + mw, y1),
-            (x, y1),
-        ])
+    # 5. Импосты с учётом сплошного направления (переключатель мастера)
+    # continuous: auto (по умолчанию, наименьшая сторона сплошная), vertical, horizontal
+    mullion_cfg_tmp2 = params.get("mullion", {}) if isinstance(params.get("mullion"), dict) else {}
+    cont_raw = str(mullion_cfg_tmp2.get("continuous", mullion_cfg_tmp2.get("continuous_impost", "auto"))).strip().lower()
+    if cont_raw in ("v", "vert", "верт", "вертикаль", "вертикальный", "vertical"):
+        cont_mode = "vertical"
+    elif cont_raw in ("h", "hor", "гор", "горизонталь", "горизонтальный", "horizontal"):
+        cont_mode = "horizontal"
+    else:
+        cont_mode = "auto"
+    if cont_mode == "auto":
+        # сплошной — наименьшее из двух (ширина/высота светового габарита)
+        if grid_w + 1e-9 < grid_h:
+            cont_mode = "horizontal"  # ширина меньше → горизонт сплошной
+        elif grid_h + 1e-9 < grid_w:
+            cont_mode = "vertical"
+        else:
+            cont_mode = "vertical"  # квадрат — tie-break вертикаль
+    mullion_continuous = cont_mode
 
+    mullions_v: list[list[tuple[float, float]]] = []
     mullions_h: list[list[tuple[float, float]]] = []
-    for j in range(1, rows):
-        y = y0 + j * cell_h + (j - 1) * mh
-        mullions_h.append([
-            (x0, y),
-            (x1, y),
-            (x1, y + mh),
-            (x0, y + mh),
-        ])
+
+    if mullion_continuous == "vertical":
+        # Вертикаль сплошная на всю высоту y0..y1
+        for i in range(1, cols):
+            x = x0 + i * cell_w + (i - 1) * mw
+            mullions_v.append([
+                (x, y0),
+                (x + mw, y0),
+                (x + mw, y1),
+                (x, y1),
+            ])
+        # Горизонталь режется между вертикалями (с разрывами)
+        vert_intervals = []
+        for i in range(1, cols):
+            x = x0 + i * cell_w + (i - 1) * mw
+            vert_intervals.append((x, x + mw))
+        vert_intervals.sort()
+        for j in range(1, rows):
+            y = y0 + j * cell_h + (j - 1) * mh
+            prev_x = x0
+            for vx1, vx2 in vert_intervals:
+                if vx1 - prev_x > 1e-9:
+                    mullions_h.append([
+                        (prev_x, y),
+                        (vx1, y),
+                        (vx1, y + mh),
+                        (prev_x, y + mh),
+                    ])
+                prev_x = vx2
+            if x1 - prev_x > 1e-9:
+                mullions_h.append([
+                    (prev_x, y),
+                    (x1, y),
+                    (x1, y + mh),
+                    (prev_x, y + mh),
+                ])
+        # если нет вертикалей — горизонталь сплошная уже (выше не сработает, но на всякий)
+        if not vert_intervals and rows > 1:
+            # уже добавлены как сегменты выше, но если cols==1, то выше создаст 1 сегмент на всю ширину — ок
+            pass
+    else:  # horizontal continuous
+        for j in range(1, rows):
+            y = y0 + j * cell_h + (j - 1) * mh
+            mullions_h.append([
+                (x0, y),
+                (x1, y),
+                (x1, y + mh),
+                (x0, y + mh),
+            ])
+        horiz_intervals = []
+        for j in range(1, rows):
+            y = y0 + j * cell_h + (j - 1) * mh
+            horiz_intervals.append((y, y + mh))
+        horiz_intervals.sort()
+        for i in range(1, cols):
+            x = x0 + i * cell_w + (i - 1) * mw
+            prev_y = y0
+            for hy1, hy2 in horiz_intervals:
+                if hy1 - prev_y > 1e-9:
+                    mullions_v.append([
+                        (x, prev_y),
+                        (x + mw, prev_y),
+                        (x + mw, hy1),
+                        (x, hy1),
+                    ])
+                prev_y = hy2
+            if y1 - prev_y > 1e-9:
+                mullions_v.append([
+                    (x, prev_y),
+                    (x + mw, prev_y),
+                    (x + mw, y1),
+                    (x, y1),
+                ])
+
+    # 5b. Штапик — единый параметр системы (25 мм по умолчанию), одинаков для рамы/импоста/створки
+    bead_width_val = 25.0
+    bead_src = None
+    if isinstance(params.get("bead"), dict):
+        bead_src = params.get("bead")
+        try:
+            bead_width_val = float(bead_src.get("width", bead_src.get("value", bead_src.get("shtapik", 25.0))))
+        except Exception:
+            bead_width_val = 25.0
+    elif isinstance(params.get("shtapik"), dict):
+        bead_src = params.get("shtapik")
+        try:
+            bead_width_val = float(bead_src.get("width", bead_src.get("value", 25.0)))
+        except Exception:
+            bead_width_val = 25.0
+    elif "bead_width" in params:
+        try:
+            bead_width_val = float(params["bead_width"])
+        except Exception:
+            bead_width_val = 25.0
+    elif "shtapik_width" in params:
+        try:
+            bead_width_val = float(params["shtapik_width"])
+        except Exception:
+            bead_width_val = 25.0
+    elif "shtapik" in params and not isinstance(params["shtapik"], dict):
+        try:
+            bead_width_val = float(params["shtapik"])
+        except Exception:
+            bead_width_val = 25.0
+    elif "bead" in params and not isinstance(params["bead"], dict):
+        try:
+            bead_width_val = float(params["bead"])
+        except Exception:
+            bead_width_val = 25.0
+    # защита от отрицательных/невалидных уже в validate, но на всякий
+    if bead_width_val is None or bead_width_val < 0:
+        bead_width_val = 25.0
 
     # 6. Створки (двухконтурные + ГОСТ-стрелки)
     sashes = calc_sashes(cells, so, sw)
@@ -1091,6 +1257,84 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
         primitives_count += len(sash["inner_contour"])  # 4 LINE
         primitives_count += len(sash["mitres"])  # 4 LINE
         primitives_count += len(sash["indicators"])  # 2 или 4 LINE
+    # 7c. Штапик — геометрия (рамa / импосты / створки), одинаковая ширина bead_width_val
+    bead_polys: list[list[tuple[float, float]]] = []
+    bw = bead_width_val
+    if bw > 1e-9:
+        # Рама: 4 полосы вдоль внутренней кромки (толщина bw внутрь проёма)
+        try:
+            fxs = [p[0] for p in frame_inner]
+            fys = [p[1] for p in frame_inner]
+            fx1, fx2 = min(fxs), max(fxs)
+            fy1, fy2 = min(fys), max(fys)
+            if fx2 - fx1 > 2 * bw + 1e-9 and fy2 - fy1 > 2 * bw + 1e-9:
+                # низ
+                bead_polys.append([(fx1, fy1), (fx2, fy1), (fx2, fy1 + bw), (fx1, fy1 + bw)])
+                # верх
+                bead_polys.append([(fx1, fy2 - bw), (fx2, fy2 - bw), (fx2, fy2), (fx1, fy2)])
+                # лево (без углов, уже покрыты низ/верх)
+                bead_polys.append([(fx1, fy1 + bw), (fx1 + bw, fy1 + bw), (fx1 + bw, fy2 - bw), (fx1, fy2 - bw)])
+                # право
+                bead_polys.append([(fx2 - bw, fy1 + bw), (fx2, fy1 + bw), (fx2, fy2 - bw), (fx2 - bw, fy2 - bw)])
+            elif fx2 > fx1 and fy2 > fy1:
+                # слишком узкая ячейка — просто внутренний прямоугольник-ободок как есть (fallback — один контур)
+                # не добавляем, чтобы не перекрывать, но можно было бы добавить тонкий прямоугольник
+                pass
+        except Exception:
+            pass
+        # Импосты: для каждого сегмента — две полосы вдоль длинной стороны
+        for poly in mullions_v:
+            try:
+                xs = [p[0] for p in poly]
+                ys = [p[1] for p in poly]
+                x1, x2 = min(xs), max(xs)
+                y1, y2 = min(ys), max(ys)
+                seg_w = x2 - x1
+                # вертикальный импост — полосы слева и справа
+                if seg_w > 1e-9 and (y2 - y1) > 2 * bw + 1e-9:
+                    # левая полоса
+                    left_w = min(bw, seg_w / 2 - 0.5)
+                    if left_w > 0.5:
+                        bead_polys.append([(x1, y1), (x1 + left_w, y1), (x1 + left_w, y2), (x1, y2)])
+                        bead_polys.append([(x2 - left_w, y1), (x2, y1), (x2, y2), (x2 - left_w, y2)])
+                    else:
+                        # если импост уже тоньше 2*bw — не делим, одна полоса не нужна
+                        pass
+            except Exception:
+                pass
+        for poly in mullions_h:
+            try:
+                xs = [p[0] for p in poly]
+                ys = [p[1] for p in poly]
+                x1, x2 = min(xs), max(xs)
+                y1, y2 = min(ys), max(ys)
+                seg_h = y2 - y1
+                if seg_h > 1e-9 and (x2 - x1) > 2 * bw + 1e-9:
+                    bot_h = min(bw, seg_h / 2 - 0.5)
+                    if bot_h > 0.5:
+                        bead_polys.append([(x1, y1), (x2, y1), (x2, y1 + bot_h), (x1, y1 + bot_h)])
+                        bead_polys.append([(x1, y2 - bot_h), (x2, y2 - bot_h), (x2, y2), (x1, y2)])
+            except Exception:
+                pass
+        # Створки: по inner_rect створки — 4 полосы внутрь светового проёма створки
+        for sash in sashes:
+            try:
+                ir = sash.get("inner_rect")
+                if not ir:
+                    continue
+                sx1, sy1, sx2, sy2 = ir
+                # inner_rect может быть не отсортировано, но обычно sx1<sx2, sy1<sy2
+                sx1, sx2 = (min(sx1, sx2), max(sx1, sx2))
+                sy1, sy2 = (min(sy1, sy2), max(sy1, sy2))
+                if sx2 - sx1 <= 2 * bw + 1e-9 or sy2 - sy1 <= 2 * bw + 1e-9:
+                    continue
+                bead_polys.append([(sx1, sy1), (sx2, sy1), (sx2, sy1 + bw), (sx1, sy1 + bw)])
+                bead_polys.append([(sx1, sy2 - bw), (sx2, sy2 - bw), (sx2, sy2), (sx1, sy2)])
+                bead_polys.append([(sx1, sy1 + bw), (sx1 + bw, sy1 + bw), (sx1 + bw, sy2 - bw), (sx1, sy2 - bw)])
+                bead_polys.append([(sx2 - bw, sy1 + bw), (sx2, sy1 + bw), (sx2, sy2 - bw), (sx2 - bw, sy2 - bw)])
+            except Exception:
+                pass
+    primitives_count += len(bead_polys)  # штапик — LWPOLYLINE
     primitives_count += len(attdefs)  # ATTDEF
 
     return {
@@ -1108,11 +1352,14 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
         "strips_y": strips_y,
         "mullions_v": mullions_v,
         "mullions_h": mullions_h,
+        "mullion_continuous": mullion_continuous,
         "cells": cells,
         "sashes": sashes,
         "sill": sill_poly,
         "addons": addons,
         "addons_info": addons_info,
+        "bead_width": bead_width_val,
+        "bead_polys": bead_polys,
         "attdefs": attdefs,
         "primitives_count": primitives_count,
     }
@@ -1401,6 +1648,41 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
     # 9b. Количество теперь в атрибуте WINDOW (ОК-1/1 шт.), отдельный TEXT не нужен
     # Оставлено для совместимости: если понадобится отдельный текст — раскомментировать
     pass
+
+    # 9c. Штапик — отрисовка полос шириной bead_width (рама/импосты/створки)
+    # Для INSIDE вид — штапик рамы/импостов под створкой скрыт (аналогично раме)
+    view_bead = str(model.get("params", {}).get("view", "OUTSIDE")).upper()
+    bead_sash_rects = [s.get("outer_rect") for s in model.get("sashes", []) if s.get("outer_rect")]
+    for poly in model.get("bead_polys", []):
+        try:
+            if view_bead == "INSIDE" and bead_sash_rects:
+                # Разбиваем полигон штапика на линии и вычитаем створки
+                # poly — 4 точки прямоугольника
+                b_lines = [
+                    (poly[0], poly[1]),
+                    (poly[1], poly[2]),
+                    (poly[2], poly[3]),
+                    (poly[3], poly[0]),
+                ]
+                for (x0, y0), (x1, y1) in b_lines:
+                    segs = [((x0, y0), (x1, y1))]
+                    for rx1, ry1, rx2, ry2 in bead_sash_rects:
+                        new_segs = []
+                        for (sx0, sy0), (sx1, sy1) in segs:
+                            new_segs.extend(_subtract_rect_from_line(sx0, sy0, sx1, sy1, rx1, ry1, rx2, ry2))
+                        segs = new_segs
+                        if not segs:
+                            break
+                    for (sx0, sy0), (sx1, sy1) in segs:
+                        blk.add_line((sx0, sy0), (sx1, sy1), dxfattribs={"layer": layer_name})
+            else:
+                blk.add_lwpolyline(
+                    poly,
+                    close=True,
+                    dxfattribs={"layer": layer_name},
+                )
+        except Exception:
+            pass
 
     # 10. Добавление 6 ATTDEF в блок (слитые строки, доработка ТЗ 0.2)
     # Доработка: вынести выше окна, выровнять по левому углу (x=0, y=OH+...)
