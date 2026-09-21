@@ -1424,6 +1424,115 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
                     (x, y1),
                 ])
 
+    # 5a. Импост заходит на раму для вида изнутри (Т-образное соединение 25мм / bead системы)
+    # Для INSIDE вида вертикальный импост должен заходить на раму на bead_width, горизонтальный сегмент — на вертикальный
+    try:
+        _view_for_mullion_ext = str(params.get("view", "OUTSIDE")).upper()
+        if _view_for_mullion_ext == "INSIDE" and (mullions_v or mullions_h):
+            # bead для расширения берём из будущего bead_width, но пока оценим из params/системы
+            _bw_ext_tmp = 25.0
+            # пробуем взять bead из params
+            try:
+                if isinstance(params.get("bead"), dict):
+                    _bw_ext_tmp = float(params["bead"].get("width", _bw_ext_tmp))
+                elif "bead" in params:
+                    _bw_ext_tmp = float(params["bead"])
+                elif "bead_width" in params:
+                    _bw_ext_tmp = float(params["bead_width"])
+                elif _sys_prof_tmp is not None:
+                    _tmp_bw = _resolve_bead_from_profile(_sys_prof_tmp, params)
+                    if _tmp_bw is not None:
+                        _bw_ext_tmp = float(_tmp_bw)
+            except Exception:
+                pass
+            # Вертикальный сплошной → заходит на раму на bw
+            if mullion_continuous == "vertical":
+                for poly in mullions_v:
+                    try:
+                        # poly: [(x,y0),(x+mw,y0),(x+mw,y1),(x,y1)] — расширяем y0-=bw, y1+=bw
+                        ys = [p[1] for p in poly]
+                        y_min, y_max = min(ys), max(ys)
+                        for i, (x, y) in enumerate(poly):
+                            if abs(y - y_min) < 1e-9:
+                                poly[i] = (x, y - _bw_ext_tmp)
+                            elif abs(y - y_max) < 1e-9:
+                                poly[i] = (x, y + _bw_ext_tmp)
+                    except Exception:
+                        pass
+                # Горизонтальные сегменты заходят на вертикальный на bw
+                for poly in mullions_h:
+                    try:
+                        xs = [p[0] for p in poly]
+                        x_min, x_max = min(xs), max(xs)
+                        # проверяем, касается ли сегмент вертикального импоста (с зазором bw)
+                        # расширяем на bw в сторону вертикального, если рядом вертикальный
+                        # Определяем, упирается ли левый/правый край в вертикальный
+                        # Левый край: если рядом есть вертикальный с x == x_min - mw (т.е. вертикальный справа от сегмента?) — уже учтён как разрыв
+                        # Проще: расширить оба края на bw, но не выходить за frame
+                        # Но чтобы не выйти за frame, ограничим расширением только если рядом вертикальный
+                        # Проверяем наличие вертикального рядом
+                        has_vert_left = any(abs(min(vp[0][0], vp[1][0]) - x_min) < 80+1e-6 or abs(max(vp[0][0], vp[1][0]) - x_min) < 1e-6 for vp in mullions_v)
+                        has_vert_right = any(abs(min(vp[0][0], vp[1][0]) - x_max) < 1e-6 or abs(max(vp[0][0], vp[1][0]) - x_max) < 80+1e-6 for vp in mullions_v)
+                        # Расширяем только если есть вертикальный рядом (Т-соединение)
+                        for i, (x, y) in enumerate(poly):
+                            if has_vert_left and abs(x - x_min) < 1e-9:
+                                poly[i] = (x - _bw_ext_tmp, y)
+                            if has_vert_right and abs(x - x_max) < 1e-9:
+                                poly[i] = (x + _bw_ext_tmp, y)
+                        # Также если сегмент упирается в раму (x_min == x0 или x_max == x1), заходит на раму на bw
+                        # x0/x1 доступны выше
+                        try:
+                            if abs(x_min - x0) < 1e-6:
+                                for i, (x, y) in enumerate(poly):
+                                    if abs(x - x_min) < 1e-9:
+                                        poly[i] = (x - _bw_ext_tmp, y)
+                            if abs(x_max - x1) < 1e-6:
+                                for i, (x, y) in enumerate(poly):
+                                    if abs(x - x_max) < 1e-9:
+                                        poly[i] = (x + _bw_ext_tmp, y)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+            else:  # horizontal continuous
+                for poly in mullions_h:
+                    try:
+                        xs = [p[0] for p in poly]
+                        x_min, x_max = min(xs), max(xs)
+                        for i, (x, y) in enumerate(poly):
+                            if abs(x - x_min) < 1e-9:
+                                poly[i] = (x - _bw_ext_tmp, y)
+                            elif abs(x - x_max) < 1e-9:
+                                poly[i] = (x + _bw_ext_tmp, y)
+                    except Exception:
+                        pass
+                for poly in mullions_v:
+                    try:
+                        ys = [p[1] for p in poly]
+                        y_min, y_max = min(ys), max(ys)
+                        has_horiz_bottom = any(abs(min(hp[0][1], hp[1][1]) - y_min) < 1e-6 for hp in mullions_h)
+                        has_horiz_top = any(abs(max(hp[0][1], hp[1][1]) - y_max) < 1e-6 for hp in mullions_h)
+                        for i, (x, y) in enumerate(poly):
+                            if has_horiz_bottom and abs(y - y_min) < 1e-9:
+                                poly[i] = (x, y - _bw_ext_tmp)
+                            if has_horiz_top and abs(y - y_max) < 1e-9:
+                                poly[i] = (x, y + _bw_ext_tmp)
+                        try:
+                            if abs(y_min - y0) < 1e-6:
+                                for i, (x, y) in enumerate(poly):
+                                    if abs(y - y_min) < 1e-9:
+                                        poly[i] = (x, y - _bw_ext_tmp)
+                            if abs(y_max - y1) < 1e-6:
+                                for i, (x, y) in enumerate(poly):
+                                    if abs(y - y_max) < 1e-9:
+                                        poly[i] = (x, y + _bw_ext_tmp)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
     # 5b. Штапик — единый параметр системы (25 мм по умолчанию), одинаков для рамы/импоста/створки
     bead_width_val = 25.0
     bead_src = None
@@ -1698,112 +1807,49 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
         primitives_count += len(sash["inner_contour"])  # 4 LINE
         primitives_count += len(sash["mitres"])  # 4 LINE
         primitives_count += len(sash["indicators"])  # 2 или 4 LINE
-    # 7c. Штапик — геометрия (рамa / импосты / створки), одинаковая ширина bead_width_val
-    # Исправлено по замечанию: для вида СНАРУЖИ штапик не виден — не отрисовывать
-    # Для вида ИЗНУТРИ — соединение под 45° (митра)
+    # 7c. Штапик — геометрия по ячейкам (рама/импосты/створки), одинаковая ширина bead_width_val
+    # Логика ПВХ: штапик — фиксатор стеклопакета, виден только изнутри (INSIDE), соединение под 45° (митра) по диагонали стеклопакета.
+    # Для глухих ячеек штапик идёт по раме/импосту вокруг ячейки (4 полосы с митрой в углах ячейки).
+    # Для ячеек со створкой штапик только в створке (по inner_rect), по раме/импосту в этой ячейке не отрисовывать.
+    # На стыках рама-импост и импост-импост сечение штапика — по диагонали стеклопакета (45°), что достигается
+    # генерацией штапика по каждой ячейке отдельно, а не общей рамой + отдельными импостами.
+    # Для створки штапик внутри inner_rect, заходит на брусок створки, а не вываливается наружу.
     bead_polys: list[list[tuple[float, float]]] = []
     bw = bead_width_val
     view_for_bead = str(params.get("view", "OUTSIDE")).upper()
     if view_for_bead == "OUTSIDE":
-        bead_polys = []  # снаружи штапик скрыт рамой/створкой — не рисуем
+        bead_polys = []  # снаружи штапик скрыт — не рисуем
     elif bw > 1e-9:
-        # Рама: 4 полосы с митрой 45° вдоль внутренней кромки
-        try:
-            fxs = [p[0] for p in frame_inner]
-            fys = [p[1] for p in frame_inner]
-            fx1, fx2 = min(fxs), max(fxs)
-            fy1, fy2 = min(fys), max(fys)
-            if fx2 - fx1 > 2 * bw + 1e-9 and fy2 - fy1 > 2 * bw + 1e-9:
-                # низ — трапеция с диагоналями по углам
-                bead_polys.append([(fx1, fy1), (fx2, fy1), (fx2 - bw, fy1 + bw), (fx1 + bw, fy1 + bw)])
-                # верх
-                bead_polys.append([(fx1, fy2), (fx1 + bw, fy2 - bw), (fx2 - bw, fy2 - bw), (fx2, fy2)])
-                # лево
-                bead_polys.append([(fx1, fy1), (fx1 + bw, fy1 + bw), (fx1 + bw, fy2 - bw), (fx1, fy2)])
-                # право
-                bead_polys.append([(fx2, fy1), (fx2, fy2), (fx2 - bw, fy2 - bw), (fx2 - bw, fy1 + bw)])
-            elif fx2 > fx1 and fy2 > fy1:
+        # Собираем множество ячеек со створкой, чтобы не рисовать раму/импост в этих ячейках
+        sash_cells_set = set()
+        for _s in sashes:
+            try:
+                _rc = tuple(_s.get("cell", ()))
+                if len(_rc) == 2:
+                    sash_cells_set.add(_rc)
+            except Exception:
                 pass
-        except Exception:
-            pass
-        # Импосты: для каждого сегмента — две полосы с митрой на торцах, с учётом разрывов сплошного импоста
-        # Чтобы 45° стык был корректно по диагонали заполнения, каждую полосу делаем трапецией с диагоналями на концах
-        # Для сплошного вертикального импоста — вертикальные полосы разбиваем на участки между горизонтальными, чтобы не пересекать их
-        try:
-            # Собираем y-интервалы горизонтальных импостов для разбивки вертикальных
-            horiz_ys = []
-            for hp in mullions_h:
-                ys = [p[1] for p in hp]
-                horiz_ys.append((min(ys), max(ys)))
-            horiz_ys.sort()
-            for poly in mullions_v:
-                try:
-                    xs = [p[0] for p in poly]
-                    ys = [p[1] for p in poly]
-                    x1, x2 = min(xs), max(xs)
-                    y1, y2 = min(ys), max(ys)
-                    # Разбиваем вертикальный импост на участки между горизонтальными (если сплошной вертикальный)
-                    y_segs = []
-                    cur_y = y1
-                    for hy1, hy2 in horiz_ys:
-                        if hy1 > y1 + 1e-9 and hy2 < y2 - 1e-9 and hy1 > cur_y + 1e-9:
-                            # участок до горизонтального
-                            if hy1 - cur_y > 1e-9:
-                                y_segs.append((cur_y, hy1))
-                            cur_y = hy2
-                    if y2 - cur_y > 1e-9:
-                        y_segs.append((cur_y, y2))
-                    if not y_segs:
-                        y_segs = [(y1, y2)]
-                    for sy1, sy2 in y_segs:
-                        seg_w = x2 - x1
-                        seg_h = sy2 - sy1
-                        if seg_w > 1e-9 and seg_h > 2 * bw + 1e-9:
-                            left_w = min(bw, seg_w / 2 - 0.5)
-                            if left_w > 0.5:
-                                bead_polys.append([(x1, sy1), (x1 + left_w, sy1 + bw), (x1 + left_w, sy2 - bw), (x1, sy2)])
-                                bead_polys.append([(x2, sy1), (x2, sy2), (x2 - left_w, sy2 - bw), (x2 - left_w, sy1 + bw)])
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        try:
-            # Аналогично для горизонтальных — разбиваем на участки между вертикальными
-            vert_xs = []
-            for vp in mullions_v:
-                xs = [p[0] for p in vp]
-                vert_xs.append((min(xs), max(xs)))
-            vert_xs.sort()
-            for poly in mullions_h:
-                try:
-                    xs = [p[0] for p in poly]
-                    ys = [p[1] for p in poly]
-                    x1, x2 = min(xs), max(xs)
-                    y1, y2 = min(ys), max(ys)
-                    x_segs = []
-                    cur_x = x1
-                    for vx1, vx2 in vert_xs:
-                        if vx1 > x1 + 1e-9 and vx2 < x2 - 1e-9 and vx1 > cur_x + 1e-9:
-                            if vx1 - cur_x > 1e-9:
-                                x_segs.append((cur_x, vx1))
-                            cur_x = vx2
-                    if x2 - cur_x > 1e-9:
-                        x_segs.append((cur_x, x2))
-                    if not x_segs:
-                        x_segs = [(x1, x2)]
-                    for sx1, sx2 in x_segs:
-                        seg_w = sx2 - sx1
-                        seg_h = y2 - y1
-                        if seg_h > 1e-9 and seg_w > 2 * bw + 1e-9:
-                            bot_h = min(bw, seg_h / 2 - 0.5)
-                            if bot_h > 0.5:
-                                bead_polys.append([(sx1, y1), (sx2, y1), (sx2 - bw, y1 + bot_h), (sx1 + bw, y1 + bot_h)])
-                                bead_polys.append([(sx1, y2), (sx1 + bw, y2 - bot_h), (sx2 - bw, y2 - bot_h), (sx2, y2)])
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        # Створки: по inner_rect створки — 4 полосы с митрой 45° внутрь светового проёма
+        # Глухие ячейки — штапик по ячейке (4 полосы)
+        for cell in cells:
+            if (cell["row"], cell["col"]) in sash_cells_set:
+                continue
+            try:
+                x1, y1, x2, y2 = float(cell["x1"]), float(cell["y1"]), float(cell["x2"]), float(cell["y2"])
+                x1, x2 = (min(x1, x2), max(x1, x2))
+                y1, y2 = (min(y1, y2), max(y1, y2))
+                if x2 - x1 <= 2 * bw + 1e-9 or y2 - y1 <= 2 * bw + 1e-9:
+                    continue
+                # Низ — трапеция с митрой 45° по углам ячейки (диагональ стеклопакета)
+                bead_polys.append([(x1, y1), (x2, y1), (x2 - bw, y1 + bw), (x1 + bw, y1 + bw)])
+                # Верх
+                bead_polys.append([(x1, y2), (x1 + bw, y2 - bw), (x2 - bw, y2 - bw), (x2, y2)])
+                # Лево
+                bead_polys.append([(x1, y1), (x1 + bw, y1 + bw), (x1 + bw, y2 - bw), (x1, y2)])
+                # Право
+                bead_polys.append([(x2, y1), (x2, y2), (x2 - bw, y2 - bw), (x2 - bw, y1 + bw)])
+            except Exception:
+                pass
+        # Створки: по inner_rect — 4 полосы с митрой 45° внутрь светового проёма (штапик заходит на брусок створки)
         for sash in sashes:
             try:
                 ir = sash.get("inner_rect")
@@ -1814,71 +1860,77 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
                 sy1, sy2 = (min(sy1, sy2), max(sy1, sy2))
                 if sx2 - sx1 <= 2 * bw + 1e-9 or sy2 - sy1 <= 2 * bw + 1e-9:
                     continue
-                # низ створки — трапеция
+                # Низ створки
                 bead_polys.append([(sx1, sy1), (sx2, sy1), (sx2 - bw, sy1 + bw), (sx1 + bw, sy1 + bw)])
-                # верх
+                # Верх
                 bead_polys.append([(sx1, sy2), (sx1 + bw, sy2 - bw), (sx2 - bw, sy2 - bw), (sx2, sy2)])
-                # лево
+                # Лево
                 bead_polys.append([(sx1, sy1), (sx1 + bw, sy1 + bw), (sx1 + bw, sy2 - bw), (sx1, sy2)])
-                # право
-                bead_polys.append([(sx2, sy1), (sx2 - bw, sy1 + bw), (sx2 - bw, sy2 - bw), (sx2, sy2)])
+                # Право
+                bead_polys.append([(sx2, sy1), (sx2, sy2), (sx2 - bw, sy2 - bw), (sx2 - bw, sy1 + bw)])
             except Exception:
                 pass
-    # 7d. Заполнение — справочный контур стеклопакета, непечатный слой Заполнение
+    # 7d. Заполнение — стеклопакет (слой Невидимые, штриховой, скрыт под штапиком)
+    # Геометрия ПВХ: стеклопакет защемлён штапиком, его край находится под штапиком и заходит на раму/импост/створку
+    # примерно на 15-20 мм (защемление). Поэтому скрытый контур СП должен НАЛАГАТЬ на профиль на ~20мм,
+    # а не вываливаться внутрь. Т.е. для глухой ячейки — ячейка РАСШИРЯЕТСЯ наружу на overlap,
+    # для створки — inner_rect РАСШИРЯЕТСЯ наружу на overlap (на брусок створки).
+    # overlap по умолчанию 20 мм, берётся из params glazing_overlap / glazing_inset / профиля.
     fillings: list[dict[str, Any]] = []
     filling_polys: list[list[tuple[float, float]]] = []
     filling_texts: list[tuple[tuple[float, float], str]] = []
-    # 7d. Заполнение — стеклопакет, скрытый под штапиком (слой Невидимые, штриховой)
-    # Геометрически стеклопакет немного меньше штапика и заходит на раму/импост/створку как штапик, но с припуском 4мм от посадочного места
-    # Т.е. контур СП — это bead inner минус 4мм с каждой стороны (заходит на профиль на bw-4, а не на bw), поэтому видна штриховая под штапиком
-    # Для створки — аналогично от inner_rect створки
-    glazing_allowance = 4.0  # припуск от штапика, можно вынести в params["glazing_inset"] если нужно
+    glazing_overlap = 20.0  # по ТЗ пользователя: ~20 мм на раму/импост
     try:
-        # пробуем взять из профиля или params
-        _glaz_inset = params.get("glazing_inset", params.get("glazing_allowance", None))
-        if _glaz_inset is not None:
+        _go = None
+        for _k in ("glazing_overlap", "glazing_inset", "glazing_allowance", "glazing_reveal", "inset_glazing"):
+            if _k in params and params[_k] is not None:
+                _go = params[_k]
+                break
+            if isinstance(params.get("glazing"), dict) and _k in params["glazing"]:
+                _go = params["glazing"][_k]
+                break
+        if _go is not None:
             try:
-                glazing_allowance = float(_glaz_inset)
+                glazing_overlap = float(_go)
             except Exception:
                 pass
-        elif _sys_prof_tmp is not None and "glazing_inset" in _sys_prof_tmp:
-            try:
-                glazing_allowance = float(_sys_prof_tmp["glazing_inset"])
-            except Exception:
-                pass
+        elif _sys_prof_tmp is not None:
+            # профиль может иметь glazing_overlap / glazing_inset
+            for _k in ("glazing_overlap", "glazing_inset", "overlap_glazing", "glazing_reveal"):
+                if _k in _sys_prof_tmp:
+                    try:
+                        glazing_overlap = float(_sys_prof_tmp[_k])
+                        break
+                    except Exception:
+                        pass
+            # fallback: если есть bead и рама, можно оценить как bead -5, но оставляем 20
     except Exception:
         pass
-    fillings: list[dict[str, Any]] = []
-    filling_polys: list[list[tuple[float, float]]] = []
-    filling_texts: list[tuple[tuple[float, float], str]] = []
+    # защита: если overlap отрицательный — считаем как 0
+    if glazing_overlap is None or glazing_overlap < 0:
+        glazing_overlap = 20.0
     try:
         for cell in cells:
             sash = next((s for s in sashes if tuple(s.get("cell", ())) == (cell["row"], cell["col"])), None)
             if sash is not None and sash.get("inner_rect"):
                 rx1, ry1, rx2, ry2 = sash["inner_rect"]
-                # для створки — стеклопакет заходит на брусок створки, как штапик, но на allowance меньше видимого стекла
-                # штапик от inner_rect внутрь на bw, видимое стекло — bead inner (rx+bw), скрытый контур СП — на allowance меньше (rx+bw+allowance)
-                # это даёт штриховую чуть меньше видимого стекла, под штапиком, с зазором 4мм
-                bw_f = float(bead_width_val) if bead_width_val else 0.0
-                inset = (bw_f + glazing_allowance) if bw_f > 1e-9 else glazing_allowance
-                fx1 = float(rx1) + inset
-                fy1 = float(ry1) + inset
-                fx2 = float(rx2) - inset
-                fy2 = float(ry2) - inset
-            else:
-                # глухое остекление — заходит на раму/импост как штапик, но скрытый контур на allowance меньше видимого
-                rx1, ry1, rx2, ry2 = cell["x1"], cell["y1"], cell["x2"], cell["y2"]
-                rx1, rx2 = (min(float(rx1), float(rx2)), max(float(rx1), float(rx2)))
-                ry1, ry2 = (min(float(ry1), float(ry2)), max(float(ry1), float(ry2)))
-                bw_f = float(bead_width_val) if bead_width_val else 0.0
-                inset = (bw_f + glazing_allowance) if bw_f > 1e-9 else glazing_allowance
-                fx1 = rx1 + inset
-                fy1 = ry1 + inset
-                fx2 = rx2 - inset
-                fy2 = ry2 - inset
+                # для створки — стеклопакет расширяется наружу на overlap на брусок створки
+                fx1 = float(rx1) - glazing_overlap
+                fy1 = float(ry1) - glazing_overlap
+                fx2 = float(rx2) + glazing_overlap
+                fy2 = float(ry2) + glazing_overlap
                 # нормализуем
                 rx1, rx2 = (min(float(rx1), float(rx2)), max(float(rx1), float(rx2)))
                 ry1, ry2 = (min(float(ry1), float(ry2)), max(float(ry1), float(ry2)))
+            else:
+                # глухое — ячейка расширяется наружу на раму/импост
+                rx1, ry1, rx2, ry2 = float(cell["x1"]), float(cell["y1"]), float(cell["x2"]), float(cell["y2"])
+                rx1, rx2 = (min(rx1, rx2), max(rx1, rx2))
+                ry1, ry2 = (min(ry1, ry2), max(ry1, ry2))
+                fx1 = rx1 - glazing_overlap
+                fy1 = ry1 - glazing_overlap
+                fx2 = rx2 + glazing_overlap
+                fy2 = ry2 + glazing_overlap
             if fx2 - fx1 < 10 or fy2 - fy1 < 10:
                 continue
             poly = [(fx1, fy1), (fx2, fy1), (fx2, fy2), (fx1, fy2)]

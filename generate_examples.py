@@ -211,7 +211,7 @@ def make_examples():
     if len(ex) >= 11:
         ex[4]["mullion"]["continuous"] = "auto"  # 3x2 квадрат -> vertical
         ex[6]["mullion"]["continuous"] = "vertical"
-        ex[7]["mullion"]["continuous"] = "horizontal"
+        ex[7]["mullion"]["continuous"] = "vertical"  # EX#08 2400×1800 -> сплошная vertical (наименьшая сторона H)
         ex[9]["mullion"]["continuous"] = "auto"
         ex[10]["mullion"]["continuous"] = "vertical"
         # Штапик: по умолчанию 25, для примера 11 — 20 мм, пример 06 — 30 мм

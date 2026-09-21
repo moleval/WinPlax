@@ -952,31 +952,40 @@ else:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
 
-            # INSIDE — штапик с митрой 45°
+            # INSIDE — штапик с митрой 45° (per-cell, глухие ячейки)
+            # Для проверки рамочных полос используем чистую модель без створок, чтобы нижняя рама была глухая
+            base_in_nosash = copy.deepcopy(base)
+            base_in_nosash["view"] = "INSIDE"
+            base_in_nosash["bead"] = 25
+            base_in_nosash["cells"] = []  # все FIX — проверяем раму/импост
+            m_in_nosash = build_window_model(base_in_nosash)
+            self.assertGreater(len(m_in_nosash["bead_polys"]), 0, "Изнутри штапик должен присутствовать (без створок)")
+            bw = m_in_nosash["bead_width"]
+            fxs = [p[0] for p in m_in_nosash["frame_inner"]]; fys = [p[1] for p in m_in_nosash["frame_inner"]]
+            fx1, fx2 = min(fxs), max(fxs); fy1, fy2 = min(fys), max(fys)
+            bottom_beads = [poly for poly in m_in_nosash["bead_polys"] if abs(min(p[1] for p in poly) - fy1) < 1e-6 and abs(max(p[1] for p in poly) - (fy1+bw)) < 1e-6 and min(p[0] for p in poly) >= fx1-1e-6 and max(p[0] for p in poly) <= fx2+1e-6]
+            self.assertGreaterEqual(len(bottom_beads), 1, "Должна быть нижняя полоса рамы (для глухих ячеек)")
+            for bb in bottom_beads:
+                self.assertAlmostEqual(min(p[1] for p in bb), fy1, delta=1e-6)
+                self.assertAlmostEqual(max(p[1] for p in bb), fy1 + bw, delta=1e-6)
+                self.assertAlmostEqual(bb[0][1], fy1, delta=1e-6)
+                self.assertAlmostEqual(bb[1][1], fy1, delta=1e-6)
+                self.assertAlmostEqual(bb[2][1], fy1 + bw, delta=1e-6)
+                self.assertAlmostEqual(bb[3][1], fy1 + bw, delta=1e-6)
+                self.assertAlmostEqual(bb[2][0], bb[1][0] - bw, delta=1e-6)
+                self.assertAlmostEqual(bb[3][0], bb[0][0] + bw, delta=1e-6)
+            has_left = any(abs(min(p[0] for p in b) - fx1) < 1e-6 for b in bottom_beads)
+            has_right = any(abs(max(p[0] for p in b) - fx2) < 1e-6 for b in bottom_beads)
+            self.assertTrue(has_left and has_right, "Нижние полосы должны упираться в левый и правый край рамы")
+            # Для проверки импостов и створок используем модель со створками (как было)
             base_in = copy.deepcopy(base)
             base_in["view"] = "INSIDE"
             base_in["bead"] = 25
             m_in = build_window_model(base_in)
-            self.assertGreater(len(m_in["bead_polys"]), 0, "Изнутри штапик должен присутствовать")
-            # Проверяем что рамочные полосы — трапеции с диагоналями bw (45°)
+            self.assertGreater(len(m_in["bead_polys"]), 0, "Изнутри штапик должен присутствовать (со створками)")
             bw = m_in["bead_width"]
-            fxs = [p[0] for p in m_in["frame_inner"]]; fys = [p[1] for p in m_in["frame_inner"]]
-            fx1, fx2 = min(fxs), max(fxs); fy1, fy2 = min(fys), max(fys)
-            # Найдём нижнюю полосу рамы: y1==fy1, четыре точки
-            bottom_beads = [poly for poly in m_in["bead_polys"] if abs(min(p[1] for p in poly) - fy1) < 1e-6 and abs(max(p[1] for p in poly) - (fy1+bw)) < 1e-6 and min(p[0] for p in poly) >= fx1-1e-6 and max(p[0] for p in poly) <= fx2+1e-6]
-            self.assertGreaterEqual(len(bottom_beads), 1, "Должна быть нижняя полоса рамы")
-            bb = bottom_beads[0]
-            # Ожидаем трапецию: (fx1,fy1),(fx2,fy1),(fx2-bw,fy1+bw),(fx1+bw,fy1+bw) — порядок как в коде
-            # Проверяем что две верхние точки смещены на bw по X и Y
-            self.assertAlmostEqual(bb[0][0], fx1, delta=1e-6); self.assertAlmostEqual(bb[0][1], fy1, delta=1e-6)
-            self.assertAlmostEqual(bb[1][0], fx2, delta=1e-6); self.assertAlmostEqual(bb[1][1], fy1, delta=1e-6)
-            self.assertAlmostEqual(bb[2][0], fx2 - bw, delta=1e-6); self.assertAlmostEqual(bb[2][1], fy1 + bw, delta=1e-6)
-            self.assertAlmostEqual(bb[3][0], fx1 + bw, delta=1e-6); self.assertAlmostEqual(bb[3][1], fy1 + bw, delta=1e-6)
-            # Импост вертикальный: две полосы с митрой на торцах — проверим что верхняя точка смещена на bw
-            # Найдём вертикальный импост: x около середины
-            # Для 2x2 вертикальный импост один сплошной y0..y1
-            # Его левая полоса: (x, y1) .. (x+bw_in, y1+bw) ??? Проверим наличие диагонали
-            vert_beads = [poly for poly in m_in["bead_polys"] if len(poly)==4 and abs(poly[0][0] - poly[3][0])<1e-6 and abs(poly[1][0]-poly[2][0])<1e-6]
+            # Импост вертикальный: две полосы с митрой на торцах — проверим на модели без створок (чистые импосты)
+            vert_beads = [poly for poly in m_in_nosash["bead_polys"] if len(poly)==4 and abs(poly[0][0] - poly[3][0])<1e-6 and abs(poly[1][0]-poly[2][0])<1e-6]
             # Среди них должны быть импостные с высотой сегментов
             self.assertGreater(len(vert_beads), 0)
             # Проверяем что хотя бы одна имеет диагональ bw по Y
