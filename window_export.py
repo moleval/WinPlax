@@ -1194,12 +1194,27 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
     layer_opening = "Штриховые"
     if layer_opening not in doc.layers:
         try:
-            # Штриховая линия для проёма, масштаб 25
-            doc.layers.add(layer_opening, color=1, linetype="DASHED")
+            # Штриховая линия для проёма: GOST 2.303.4, толщина 0.09 (weight 9)
+            # Пытаемся создать тип линии если нет
+            if "GOST2.303 4" not in doc.linetypes:
+                try:
+                    # В шаблоне уже есть, но если нет — создаём DASHED как fallback
+                    doc.linetypes.add("GOST2.303 4", pattern=[0.5, 0.5, -0.5], description="GOST 2.303.4")
+                except Exception:
+                    pass
+            lt = "GOST2.303 4" if "GOST2.303 4" in doc.linetypes else "DASHED"
+            doc.layers.add(layer_opening, color=7, linetype=lt, lineweight=9)
         except Exception:
             try:
                 doc.layers.add(layer_opening, color=1)
-                doc.layers.get(layer_opening).dxf.linetype = "DASHED"
+                try:
+                    # Устанавливаем GOST 2.303.4 и толщину 0.09 если слой уже есть
+                    lt = "GOST2.303 4" if "GOST2.303 4" in doc.linetypes else "DASHED"
+                    doc.layers.get(layer_opening).dxf.linetype = lt
+                    doc.layers.get(layer_opening).dxf.lineweight = 9
+                    doc.layers.get(layer_opening).color = 7
+                except Exception:
+                    pass
             except Exception:
                 doc.layers.add(layer_opening, color=1)
     # Установить масштаб линий для слоя Штриховые — 25 (через CELTSCALE у примитивов)
@@ -1364,7 +1379,14 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
             blk.add_line(p1, p2, dxfattribs={"layer": layer_name})
         # Линии открывания по ГОСТ — всегда, но по доработке на слое Штриховые, масштаб 25
         for p1, p2 in sash.get("indicators", []):
-            ent_ind = blk.add_line(p1, p2, dxfattribs={"layer": layer_opening})
+            # Условное обозначение открывания: для вида изнутри — сплошная (Continuous) на Штриховые,
+            # для вида снаружи — по слою (GOST 2.303.4)
+            view_ind = str(model.get("params", {}).get("view", "OUTSIDE")).upper()
+            if view_ind == "INSIDE":
+                ltype = "Continuous"
+            else:
+                ltype = "ByLayer"
+            ent_ind = blk.add_line(p1, p2, dxfattribs={"layer": layer_opening, "linetype": ltype})
             try:
                 ent_ind.dxf.linetype_scale = 25.0
             except Exception:
@@ -1465,7 +1487,7 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
                 ds.dxf.dimgap = 3.0
                 # Масштаб увеличиваем: было 4, стало 10 (шаблонный 4 → 10, 25/75 не трогаем если больше)
                 cur_scale = float(getattr(ds.dxf, "dimscale", 4.0))
-                ds.dxf.dimscale = max(cur_scale, 10.0)  # минимум 10 для видимости
+                ds.dxf.dimscale = max(cur_scale, 4.0)  # минимум 4, соразмерно тексту атрибутов 30 (dimtxt 8*4=32)
             except Exception:
                 pass
             try:
@@ -1624,24 +1646,24 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
         # Отступы увеличены: 60, 120, 180 (было 30,60,90) — отодвинуто от проёма, масштаб 4
         # Детализация по ячейкам — по ширине светового проёма (между импостами) на уровне рамы
         horiz_points = [frame_left] + vert_centers + [frame_right]
-        base_y_detailed = -60.0
+        base_y_detailed = -80.0
         for i in range(len(horiz_points) - 1):
             x_a, x_b = horiz_points[i], horiz_points[i+1]
             if abs(x_b - x_a) < 1e-6:
                 continue
             _add_dim(p1=(x_a, horiz_ref_y), p2=(x_b, horiz_ref_y), base=(0, base_y_detailed), angle=0)
-        base_y_window = -120.0
+        base_y_window = -160.0
         # Габарит окна с доборами (если есть) — от overall_left до overall_right на уровне horiz_ref_y
         _add_dim(p1=(overall_left, horiz_ref_y), p2=(overall_right, horiz_ref_y), base=(0, base_y_window), angle=0)
-        base_y_opening = -180.0
+        base_y_opening = -240.0
         _add_dim(p1=(0, 0), p2=(float(ow), 0), base=(0, base_y_opening), angle=0)
         # Отдельный размер для доборов слева/справа (горизонтально) если есть
         if addon_left > 1e-9:
             _add_dim(p1=(overall_left, horiz_ref_y), p2=(frame_left, horiz_ref_y), base=(0, base_y_detailed), angle=0)
         if addon_right > 1e-9:
             _add_dim(p1=(frame_right, horiz_ref_y), p2=(overall_right, horiz_ref_y), base=(0, base_y_detailed), angle=0)
-        # Монтажные швы горизонтальные — во второй цепочке (base -120), как и подставочник/доборы
-        base_y_seam = -120.0
+        # Монтажные швы горизонтальные — во второй цепочке (base -160), как и подставочник/доборы
+        base_y_seam = -160.0
         if abs(overall_left) > 1e-9:
             _add_dim(p1=(0, 0), p2=(overall_left, 0), base=(0, base_y_seam), angle=0)
         if abs(float(ow) - overall_right) > 1e-9:
@@ -1652,13 +1674,13 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
         # Вертикальные только справа: привязка к правому краю блока (x = overall_right для окна с доборами, иначе frame_right)
         vert_ref_x = overall_right if (addon_right > 1e-9 or addon_left > 1e-9) else frame_right
         vert_points = [frame_bottom] + horiz_centers + [frame_top]
-        base_x_detailed_r = float(ow) + 60.0
+        base_x_detailed_r = float(ow) + 80.0
         for i in range(len(vert_points) - 1):
             y_a, y_b = vert_points[i], vert_points[i+1]
             if abs(y_b - y_a) < 1e-6:
                 continue
             _add_dim(p1=(vert_ref_x, y_a), p2=(vert_ref_x, y_b), base=(base_x_detailed_r, 0), angle=90)
-        base_x_window_r = float(ow) + 120.0
+        base_x_window_r = float(ow) + 160.0
         _add_dim(p1=(vert_ref_x, frame_bottom), p2=(vert_ref_x, frame_top), base=(base_x_window_r, 0), angle=90)
         # Размер подставочного профиля (вертикально) — во второй цепочке (base 120)
         if sill and abs(sill_top - sill_bottom) > 1e-9:
@@ -1667,7 +1689,7 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
         if addon_top > 1e-9:
             _add_dim(p1=(vert_ref_x, frame_top), p2=(vert_ref_x, overall_top), base=(base_x_window_r, 0), angle=90)
             # общий с добором уже есть как window overall, дополнительно не нужно
-        base_x_opening_r = float(ow) + 180.0
+        base_x_opening_r = float(ow) + 240.0
         _add_dim(p1=(float(ow), 0), p2=(float(ow), float(oh)), base=(base_x_opening_r, 0), angle=90)
         # Монтажные швы вертикальные — во второй цепочке (base 120), горизонтальные — тоже во второй (-120)
         # Нижний шов: 0 .. horiz_ref_y

@@ -54,7 +54,7 @@ BASE_PARAMS = {
 def make_examples():
     ex = []
 
-    # 1. 1x1 FIX без подставочника
+    # 1. 1x1 FIX без подставочника — СНАРУЖИ
     p = copy.deepcopy(BASE_PARAMS)
     p["window_name"] = "ОК-1.1"
     p["opening"] = {"width": 900, "height": 900, "seam": 20}
@@ -63,6 +63,7 @@ def make_examples():
     p["sill"] = {"on": False, "height": 30}
     p["addons"] = {"left": 0, "right": 0, "top": 0}
     p["metadata"]["object"] = "Пример 01"
+    p["view"] = "OUTSIDE"
     ex.append(p)
 
     # 2. 1x1 TURN с подставочником
@@ -170,14 +171,22 @@ def make_examples():
     p["metadata"]["object"] = "Пример 11"
     ex.append(p)
 
-    # 12. 3x2 узкий высокий
+    # 12. 3x2 узкий высокий — ИЗНУТРИ
     p = copy.deepcopy(BASE_PARAMS)
     p["window_name"] = "ОК-УЗ"
     p["opening"] = {"width": 1200, "height": 2100, "seam": 30}
     p["cols"] = 2; p["rows"] = 3
     p["cells"] = [{"row": 1, "col": 1, "sash_type": "FIX"}, {"row": 1, "col": 2, "sash_type": "TURN"}, {"row": 2, "col": 1, "sash_type": "TURN"}, {"row": 2, "col": 2, "sash_type": "TURN_TILT"}, {"row": 3, "col": 1, "sash_type": "TILT"}, {"row": 3, "col": 2, "sash_type": "FIX"}]
     p["metadata"]["object"] = "Пример 12"
+    p["view"] = "INSIDE"
     ex.append(p)
+
+    # Проставим виды: нечётные — СНАРУЖИ, чётные — ИЗНУТРИ для разнообразия
+    for i, pp in enumerate(ex):
+        if i % 2 == 1:
+            pp["view"] = "INSIDE"
+        else:
+            pp["view"] = "OUTSIDE"
 
     return ex
 
@@ -247,7 +256,7 @@ def export_all_to_one(models, output_path, template_path=None):
         ds = doc.dimstyles.get("Основной стиль")
         ds.dxf.dimtxt = 8.0
         ds.dxf.dimasz = 6.0
-        ds.dxf.dimscale = 10.0
+        ds.dxf.dimscale = 4.0
         ds.dxf.dimexe = 3.0
         ds.dxf.dimexo = 2.5
         ds.dxf.dimgap = 3.0
@@ -359,6 +368,14 @@ def export_all_to_one(models, output_path, template_path=None):
 
     doc.saveas(out_file)
     print(f"Сохранён файл со всеми примерами: {out_file}  ({len(built)} блоков)")
+    # Конвертация всех примеров в DWG (если ODA доступен)
+    try:
+        from window_export import convert_to_dwg as _c2d
+        dwg_res = _c2d(out_file)
+        if dwg_res and pathlib.Path(dwg_res).is_file():
+            print(f"  Конвертация всех примеров в DWG: {dwg_res}")
+    except Exception:
+        pass
     # Конвертация всех примеров в DWG (если ODA доступен, как для window_export)
     try:
         from window_export import convert_to_dwg as _c2d
