@@ -1731,8 +1731,29 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
         except Exception:
             pass
 
-    # 12. Сохранение DXF
-    doc.saveas(out_file)
+    # 12. Сохранение DXF (с обработкой занятого файла на Windows)
+    try:
+        if out_file.exists():
+            try:
+                out_file.unlink()
+            except PermissionError:
+                # файл занят — попробуем сохранить под _new и подсказать
+                alt = out_file.with_name(out_file.stem + "_new" + out_file.suffix)
+                print(f"  Предупреждение: файл {out_file} занят, пробуем сохранить как {alt.name}")
+                try:
+                    doc.saveas(alt)
+                    print(f"  Сохранено под альтернативным именем: {alt} — закройте {out_file.name} и переименуйте")
+                    return alt
+                except Exception as e2:
+                    print(f"  Ошибка сохранения DXF (занят): {e2}. Закройте файл в AutoCAD/проводнике и повторите.")
+                    raise PermissionError(f"Файл занят: {out_file}") from e2
+            except Exception:
+                pass
+        doc.saveas(out_file)
+        return out_file
+    except PermissionError as e_perm:
+        print(f"  Ошибка: файл {out_file} занят (Permission denied). Закройте его и повторите. {e_perm}")
+        raise
 
 
 def find_oda() -> str | None:
@@ -1921,7 +1942,9 @@ def main(argv: list[str] | None = None) -> int:
     tpl_path = args.template or params.get("template") or params.get("template_path")
 
     try:
-        export_to_dxf(model, out_dxf_path, template_path=tpl_path)
+        actual_out = export_to_dxf(model, out_dxf_path, template_path=tpl_path)
+        if actual_out is not None:
+            out_dxf_path = Path(actual_out)
         size_bytes = out_dxf_path.stat().st_size
         size_kb = size_bytes / 1024.0
 
@@ -1929,6 +1952,10 @@ def main(argv: list[str] | None = None) -> int:
         print("[6/6] Экспорт DXF... OK")
         print(f"      Файл:       {rel_path}")
         print(f"      Размер:     {size_kb:.1f} KB")
+    except PermissionError as e_perm:
+        print(f"[6/6] Экспорт DXF... ОШИБКА: файл занят (Permission denied): {e_perm}")
+        print(f"      Закройте файл {out_dxf_path} в AutoCAD/проводнике и повторите.")
+        return 1
     except Exception as e:
         print(f"[6/6] Экспорт DXF... ОШИБКА: {e}")
         import traceback; traceback.print_exc()
@@ -1951,7 +1978,9 @@ def main(argv: list[str] | None = None) -> int:
             inside_params["view"] = "INSIDE"
             inside_model = build_window_model(inside_params)
             inside_path = out_dxf_path.parent / f"{inside_model['window_name']}_INSIDE.dxf"
-            export_to_dxf(inside_model, inside_path, template_path=tpl_path)
+            actual_inside = export_to_dxf(inside_model, inside_path, template_path=tpl_path)
+            if actual_inside is not None:
+                inside_path = Path(actual_inside)
             isize = inside_path.stat().st_size / 1024.0
             print(f"  Вид изнутри (для отработки): ./{inside_path.as_posix()} ({isize:.1f} KB)")
             dwg_inside = convert_to_dwg(inside_path)
@@ -1976,21 +2005,44 @@ def main(argv: list[str] | None = None) -> int:
             examples = _ge.make_examples()
             out_all = Path("output") / "Все_примеры.dxf"
             # Используем тот же шаблон, что и для одиночного
-            _ge.export_all_to_one(examples, str(out_all), template_path=tpl_path)
-            # Конвертация всех примеров в DWG (если ODA есть — .dxf удалится, останется .dwg)
-            dwg_all = convert_to_dwg(out_all)
-            if dwg_all and Path(dwg_all).is_file():
-                print(f"  Все примеры конвертированы в DWG: {dwg_all}")
-            # Также выведем перечень из свежего файла
+            actual_all = _ge.export_all_to_one(examples, str(out_all), template_path=tpl_path)
+            # export_all_to_one возвращает фактический путь (может быть _new при занятом файле)
+            if actual_all is not None:
+                out_all = Path(actual_all)
+            # Конвертация всех примеров в DWG — только если DXF ещё существует (generate_examples уже конвертирует, но на случай если ODA не был доступен там)
+            if out_all.exists() and out_all.suffix.lower() == ".dxf":
+                dwg_all = convert_to_dwg(out_all)
+                if dwg_all and Path(dwg_all).is_file():
+                    print(f"  Все примеры конвертированы в DWG: {dwg_all}")
+                    try:
+                        # DXF уже может быть удалён внутри generate_examples, проверяем
+                        if out_all.exists():
+                            out_all.unlink()
+                            print(f"  DXF Все_примеры удалён после конвертации (остался DWG): {dwg_all}")
+                    except PermissionError:
+                        print(f"  Не удалось удалить DXF {out_all} (занят)")
+                    except Exception:
+                        pass
+            elif out_all.with_suffix(".dwg").exists():
+                print(f"  Все примеры уже в DWG: {out_all.with_suffix('.dwg')}")
+            # Также выведем перечень из свежего файла (DXF или DWG если остался DXF)
             try:
                 import ezdxf as _ez
+                read_path = out_all if out_all.exists() else out_all.with_suffix(".dwg")
+                # ezdxf не читает DWG, поэтому только если остался DXF
                 if out_all.exists():
                     _d = _ez.readfile(str(out_all))
                     print("  Перечень примеров из Все_примеры:")
                     for i, ins in enumerate(_d.modelspace().query("INSERT")):
                         print(f"    {i+1:02d}. {ins.dxf.name}")
+                else:
+                    # если остался только DWG — перечень уже выводился в generate_examples
+                    pass
             except Exception:
                 pass
+        except PermissionError as e_perm:
+            print(f"  Файл Все_примеры.dxf занят — закройте его в AutoCAD/проводнике и запустите снова: {e_perm}")
+            print(f"  Совет: закройте предпросмотр в проводнике, AutoCAD, DWG TrueView и повторите python window_export.py")
         except Exception as e:
             print(f"  Не удалось собрать все примеры: {e}")
             import traceback; traceback.print_exc()

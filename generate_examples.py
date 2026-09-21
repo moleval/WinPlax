@@ -366,27 +366,64 @@ def export_all_to_one(models, output_path, template_path=None):
         except Exception:
             pass
 
-    doc.saveas(out_file)
-    print(f"Сохранён файл со всеми примерами: {out_file}  ({len(built)} блоков)")
-    # Конвертация всех примеров в DWG (если ODA доступен)
+    # Сохранение с обработкой занятого файла (Windows часто лочит файл при открытом превью/AutoCAD)
+    try:
+        if out_file.exists():
+            try:
+                out_file.unlink()
+            except PermissionError as e_unlink:
+                print(f"  Предупреждение: файл {out_file} занят другим процессом ({e_unlink}).")
+                print(f"  Закройте {out_file.name} в AutoCAD/просмотрщике/проводнике и повторите, либо сохраняем под альтернативным именем.")
+                alt = out_file.with_name(out_file.stem + "_new" + out_file.suffix)
+                try:
+                    doc.saveas(alt)
+                    print(f"  Сохранено под альтернативным именем: {alt} ({len(built)} блоков)")
+                    print(f"Сохранён файл со всеми примерами: {alt}  ({len(built)} блоков)")
+                    out_file = alt
+                except PermissionError as e2:
+                    raise PermissionError(f"Не удалось сохранить ни {out_file} ни {alt}: {e2}") from e2
+                # конвертация и вывод уже сделаны для alt, пропускаем общий путь
+                try:
+                    from window_export import convert_to_dwg as _c2d
+                    dwg_res = _c2d(out_file)
+                    if dwg_res and Path(dwg_res).is_file():
+                        print(f"  Конвертация всех примеров в DWG: {dwg_res}")
+                        try:
+                            out_file.unlink()
+                            print(f"  DXF удалён после конвертации (остался DWG): {dwg_res}")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                for i, m in enumerate(built):
+                    print(f"  {i+1:02d}. {m['block_name']}  at {positions[i]}  габарит {m['opening']['width']}x{m['opening']['height']}  сетка {m['grid']['cols']}x{m['grid']['rows']}")
+                return out_file
+            except Exception:
+                # другая ошибка при удалении — пробуем сохранить поверх
+                pass
+        doc.saveas(out_file)
+        print(f"Сохранён файл со всеми примерами: {out_file}  ({len(built)} блоков)")
+    except PermissionError as e_perm:
+        print(f"  Ошибка: файл {out_file} занят (Permission denied). Закройте его в AutoCAD/проводнике и запустите снова. Детали: {e_perm}")
+        raise
+    # Конвертация всех примеров в DWG (если ODA доступен) — один вызов, с удалением DXF при успехе
     try:
         from window_export import convert_to_dwg as _c2d
         dwg_res = _c2d(out_file)
-        if dwg_res and pathlib.Path(dwg_res).is_file():
+        if dwg_res and Path(dwg_res).is_file():
             print(f"  Конвертация всех примеров в DWG: {dwg_res}")
+            try:
+                out_file.unlink()
+                print(f"  DXF удалён после конвертации (остался DWG): {dwg_res}")
+            except PermissionError:
+                print(f"  Не удалось удалить DXF (занят): {out_file}")
+            except Exception:
+                pass
     except Exception:
-        pass
-    # Конвертация всех примеров в DWG (если ODA доступен, как для window_export)
-    try:
-        from window_export import convert_to_dwg as _c2d
-        dwg_res = _c2d(out_file)
-        if dwg_res and pathlib.Path(dwg_res).is_file():
-            print(f"  Конвертация всех примеров в DWG: {dwg_res}")
-    except Exception as e:
-        # ODA не найден — пропускаем
         pass
     for i, m in enumerate(built):
         print(f"  {i+1:02d}. {m['block_name']}  at {positions[i]}  габарит {m['opening']['width']}x{m['opening']['height']}  сетка {m['grid']['cols']}x{m['grid']['rows']}")
+    return out_file
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Сборка всех примеров в один DXF")
