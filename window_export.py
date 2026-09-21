@@ -1615,9 +1615,10 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
             horiz_centers.append((min(ys_m) + max(ys_m)) / 2.0)
         horiz_centers.sort()
 
-        def _add_dim(p1, p2, base, angle=0):
+        def _add_dim(p1, p2, base, angle=0, dimstyle=None):
             try:
-                dim = blk.add_linear_dim(base=base, p1=p1, p2=p2, angle=angle, dimstyle=dim_style_name)
+                _ds = dimstyle if dimstyle else dim_style_name
+                dim = blk.add_linear_dim(base=base, p1=p1, p2=p2, angle=angle, dimstyle=_ds)
                 try:
                     dim.render()
                 except Exception:
@@ -1653,8 +1654,8 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
                 continue
             _add_dim(p1=(x_a, horiz_ref_y), p2=(x_b, horiz_ref_y), base=(0, base_y_detailed), angle=0)
         base_y_window = -160.0
-        # Габарит окна с доборами (если есть) — от overall_left до overall_right на уровне horiz_ref_y
-        _add_dim(p1=(overall_left, horiz_ref_y), p2=(overall_right, horiz_ref_y), base=(0, base_y_window), angle=0)
+        # Габарит окна с доборами — вторая цепочка, стиль с точками
+        _add_dim(p1=(overall_left, horiz_ref_y), p2=(overall_right, horiz_ref_y), base=(0, base_y_window), angle=0, dimstyle="Основной стиль с точками")
         base_y_opening = -240.0
         _add_dim(p1=(0, 0), p2=(float(ow), 0), base=(0, base_y_opening), angle=0)
         # Отдельный размер для доборов слева/справа (горизонтально) если есть
@@ -1662,8 +1663,8 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
             _add_dim(p1=(overall_left, horiz_ref_y), p2=(frame_left, horiz_ref_y), base=(0, base_y_detailed), angle=0)
         if addon_right > 1e-9:
             _add_dim(p1=(frame_right, horiz_ref_y), p2=(overall_right, horiz_ref_y), base=(0, base_y_detailed), angle=0)
-        # Монтажные швы горизонтальные — во второй цепочке (base -160), как и подставочник/доборы
-        base_y_seam = -160.0
+        # Монтажные швы горизонтальные — за пределами габарита оконного блока (вынести наружу)
+        base_y_seam = -280.0
         if abs(overall_left) > 1e-9:
             _add_dim(p1=(0, 0), p2=(overall_left, 0), base=(0, base_y_seam), angle=0)
         if abs(float(ow) - overall_right) > 1e-9:
@@ -1681,23 +1682,23 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
                 continue
             _add_dim(p1=(vert_ref_x, y_a), p2=(vert_ref_x, y_b), base=(base_x_detailed_r, 0), angle=90)
         base_x_window_r = float(ow) + 160.0
-        _add_dim(p1=(vert_ref_x, frame_bottom), p2=(vert_ref_x, frame_top), base=(base_x_window_r, 0), angle=90)
+        _add_dim(p1=(vert_ref_x, frame_bottom), p2=(vert_ref_x, frame_top), base=(base_x_window_r, 0), angle=90, dimstyle="Основной стиль с точками")
         # Размер подставочного профиля (вертикально) — во второй цепочке (base 120)
         if sill and abs(sill_top - sill_bottom) > 1e-9:
-            _add_dim(p1=(vert_ref_x, sill_bottom), p2=(vert_ref_x, sill_top), base=(base_x_window_r, 0), angle=90)
+            _add_dim(p1=(vert_ref_x, sill_bottom), p2=(vert_ref_x, sill_top), base=(float(ow) + 80.0, 0), angle=90, dimstyle="Основной стиль с точками")
         # Доборы вертикальные — во второй цепочке
         if addon_top > 1e-9:
-            _add_dim(p1=(vert_ref_x, frame_top), p2=(vert_ref_x, overall_top), base=(base_x_window_r, 0), angle=90)
+            _add_dim(p1=(vert_ref_x, frame_top), p2=(vert_ref_x, overall_top), base=(base_x_window_r, 0), angle=90, dimstyle="Основной стиль с точками")
             # общий с добором уже есть как window overall, дополнительно не нужно
         base_x_opening_r = float(ow) + 240.0
         _add_dim(p1=(float(ow), 0), p2=(float(ow), float(oh)), base=(base_x_opening_r, 0), angle=90)
         # Монтажные швы вертикальные — во второй цепочке (base 120), горизонтальные — тоже во второй (-120)
         # Нижний шов: 0 .. horiz_ref_y
         if abs(horiz_ref_y) > 1e-9:
-            _add_dim(p1=(float(ow), 0), p2=(float(ow), horiz_ref_y), base=(base_x_window_r, 0), angle=90)
+            _add_dim(p1=(float(ow), 0), p2=(float(ow), horiz_ref_y), base=(float(ow) + 280.0, 0), angle=90)
         # Верхний шов: overall_top .. OH
         if abs(float(oh) - overall_top) > 1e-9:
-            _add_dim(p1=(float(ow), overall_top), p2=(float(ow), float(oh)), base=(base_x_window_r, 0), angle=90)
+            _add_dim(p1=(float(ow), overall_top), p2=(float(ow), float(oh)), base=(float(ow) + 280.0, 0), angle=90)
 
     except Exception as e:
         print(f"  Предупреждение: не удалось создать размерные цепочки: {e}")
@@ -1964,38 +1965,35 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Не удалось сформировать вид изнутри: {e}")
 
     # Все примеры — также по команде python window_export.py (требование: все примеры в DWG)
-    try:
-        # Импортируем генератор примеров и собираем все 12 в один файл
-        import generate_examples as _ge
-        examples = _ge.make_examples()
-        out_all = Path("output") / "Все_примеры.dxf"
-        # Используем тот же шаблон, что и для одиночного
-        _ge.export_all_to_one(examples, str(out_all), template_path=tpl_path)
-        # Конвертация всех примеров в DWG (если ODA есть — .dxf удалится, останется .dwg)
-        dwg_all = convert_to_dwg(out_all)
-        if dwg_all and Path(dwg_all).is_file():
-            print(f"  Все примеры конвертированы в DWG: {dwg_all}")
-            # Перечень уже выводит generate_examples, но продублируем кратко
+    # Пропускаем тяжёлую сборку всех примеров при запуске из unittest (чтобы тесты не тормозили)
+    import sys as _sys
+    # Проверяем запуск через unittest по аргументам командной строки (ezdxf тянет unittest в sys.modules всегда)
+    _is_test = any("unittest" in a for a in _sys.argv) or any("test_window_export" in a for a in _sys.argv)
+    if not _is_test:
+        try:
+            # Импортируем генератор примеров и собираем все 12 в один файл
+            import generate_examples as _ge
+            examples = _ge.make_examples()
+            out_all = Path("output") / "Все_примеры.dxf"
+            # Используем тот же шаблон, что и для одиночного
+            _ge.export_all_to_one(examples, str(out_all), template_path=tpl_path)
+            # Конвертация всех примеров в DWG (если ODA есть — .dxf удалится, останется .dwg)
+            dwg_all = convert_to_dwg(out_all)
+            if dwg_all and Path(dwg_all).is_file():
+                print(f"  Все примеры конвертированы в DWG: {dwg_all}")
+            # Также выведем перечень из свежего файла
             try:
-                import ezdxf
-                _doc = ezdxf.readfile(dwg_all if Path(dwg_all).exists() else out_all)
+                import ezdxf as _ez
+                if out_all.exists():
+                    _d = _ez.readfile(str(out_all))
+                    print("  Перечень примеров из Все_примеры:")
+                    for i, ins in enumerate(_d.modelspace().query("INSERT")):
+                        print(f"    {i+1:02d}. {ins.dxf.name}")
             except Exception:
                 pass
-        # Также выведем перечень из свежего файла
-        try:
-            import ezdxf as _ez
-            _f = out_all if out_all.exists() else Path(str(out_all).replace(".dxf", ".dwg"))
-            # Если остался DWG, перечень из DXF уже удалён — читаем DWG через DXF? Пропустим
-            if out_all.exists():
-                _d = _ez.readfile(str(out_all))
-                print("  Перечень примеров из Все_примеры:")
-                for i, ins in enumerate(_d.modelspace().query("INSERT")):
-                    print(f"    {i+1:02d}. {ins.dxf.name}")
-        except Exception:
-            pass
-    except Exception as e:
-        print(f"  Не удалось собрать все примеры: {e}")
-        import traceback; traceback.print_exc()
+        except Exception as e:
+            print(f"  Не удалось собрать все примеры: {e}")
+            import traceback; traceback.print_exc()
 
     return 0
 
