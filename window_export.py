@@ -1878,77 +1878,69 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
                 sy1, sy2 = (min(sy1, sy2), max(sy1, sy2))
                 if sx2 - sx1 <= 2 * bw + 1e-9 or sy2 - sy1 <= 2 * bw + 1e-9:
                     continue
-                # Низ створки — между стеклом и профилем снизу: outer at glass y1 (длиннее), inner at y1-bw (короче) вниз на профиль
-                bead_polys.append([(sx1, sy1), (sx2, sy1), (sx2 - bw, sy1 - bw), (sx1 + bw, sy1 - bw)])
-                # Верх — выше стекла: outer at y2 длиннее, inner at y2+bw короче вверх на профиль
-                bead_polys.append([(sx1 + bw, sy2 + bw), (sx2 - bw, sy2 + bw), (sx2, sy2), (sx1, sy2)])
-                # Лево — левее стекла: outer at x1 длиннее (стекло), inner at x1-bw короче влево на профиль
-                bead_polys.append([(sx1, sy1), (sx1, sy2), (sx1 - bw, sy2 - bw), (sx1 - bw, sy1 + bw)])
-                # Право — правее стекла: outer at x2 длиннее, inner at x2+bw короче вправо на профиль
-                bead_polys.append([(sx2, sy1), (sx2, sy2), (sx2 + bw, sy2 - bw), (sx2 + bw, sy1 + bw)])
+                # Низ створки — между стеклом и профилем снизу: outer south длиннее (стекло+40), inner north короче (стекло) — наружу на профиль 20
+                bead_polys.append([(sx1 - bw, sy1 - bw), (sx2 + bw, sy1 - bw), (sx2, sy1), (sx1, sy1)])
+                # Верх — выше стекла: outer north длиннее, inner south короче
+                bead_polys.append([(sx1, sy2), (sx2, sy2), (sx2 + bw, sy2 + bw), (sx1 - bw, sy2 + bw)])
+                # Лево — левее стекла: outer west длиннее, inner east короче
+                bead_polys.append([(sx1 - bw, sy1 - bw), (sx1, sy1), (sx1, sy2), (sx1 - bw, sy2 + bw)])
+                # Право — правее стекла: outer east длиннее, inner west короче
+                bead_polys.append([(sx2, sy1), (sx2 + bw, sy1 - bw), (sx2 + bw, sy2 + bw), (sx2, sy2)])
             except Exception:
                 pass
     # 7d. Заполнение — стеклопакет (слой Невидимые, штриховой, скрыт под штапиком)
-    # Геометрия ПВХ: стеклопакет защемлён штапиком, его край находится под штапиком и заходит на раму/импост/створку
-    # примерно на 15-20 мм (защемление). Поэтому скрытый контур СП должен НАЛАГАТЬ на профиль на ~20мм,
-    # а не вываливаться внутрь. Т.е. для глухой ячейки — ячейка РАСШИРЯЕТСЯ наружу на overlap,
-    # для створки — inner_rect РАСШИРЯЕТСЯ наружу на overlap (на брусок створки).
-    # overlap по умолчанию 20 мм, берётся из params glazing_overlap / glazing_inset / профиля.
+    # По новому ТЗ: заполнение от посадочной линии штапика -5 мм (фалец), т.е. от размера штапика -10 мм.
+    # Для глухих: посадочная линия = граница ячейки (cell), штапик наружу 20 на раму/импост, заполнение внутри ячейки -5 от ячейки
+    # Для створки: посадочная линия = inner_rect створки (световой проём), штапик на створке 20, заполнение внутри inner -5
+    # Для вида снаружи заполнение не должно находить на линии рам/импостов — теперь оно внутри, не на линиях.
     fillings: list[dict[str, Any]] = []
     filling_polys: list[list[tuple[float, float]]] = []
     filling_texts: list[tuple[tuple[float, float], str]] = []
-    glazing_overlap = 20.0  # по ТЗ пользователя: ~20 мм на раму/импост
+    # Фалец 5 мм от посадочной линии, т.е. заполнение = штапик -10 (5 с каждой стороны)
+    # Посадочная линия = cell (для глухих) / inner_rect (для створок), штапик наружу/на створке 20
+    falz_inset = 5.0  # 5 мм от посадочной линии внутрь
+    # Поддержка переопределения через params: glazing_falz / falz / glazing_inset
     try:
-        _go = None
-        for _k in ("glazing_overlap", "glazing_inset", "glazing_allowance", "glazing_reveal", "inset_glazing"):
+        _falz = None
+        for _k in ("glazing_falz", "falz", "falz_inset", "glazing_inset"):
             if _k in params and params[_k] is not None:
-                _go = params[_k]
+                _falz = params[_k]
                 break
             if isinstance(params.get("glazing"), dict) and _k in params["glazing"]:
-                _go = params["glazing"][_k]
+                _falz = params["glazing"][_k]
                 break
-        if _go is not None:
+        if _falz is not None:
             try:
-                glazing_overlap = float(_go)
+                falz_inset = float(_falz)
             except Exception:
                 pass
-        elif _sys_prof_tmp is not None:
-            # профиль может иметь glazing_overlap / glazing_inset
-            for _k in ("glazing_overlap", "glazing_inset", "overlap_glazing", "glazing_reveal"):
-                if _k in _sys_prof_tmp:
-                    try:
-                        glazing_overlap = float(_sys_prof_tmp[_k])
-                        break
-                    except Exception:
-                        pass
-            # fallback: если есть bead и рама, можно оценить как bead -5, но оставляем 20
+        # bead -10 означает falz 5, уже учтено; если задан glazing_overlap — игнорируем, используем falz
     except Exception:
         pass
-    # защита: если overlap отрицательный — считаем как 0
-    if glazing_overlap is None or glazing_overlap < 0:
-        glazing_overlap = 20.0
+    if falz_inset is None or falz_inset < 0:
+        falz_inset = 5.0
+    # Для вида снаружи заполнение внутри — не на линиях рам/импостов (INSIDE и OUTSIDE теперь внутри)
     try:
         for cell in cells:
             sash = next((s for s in sashes if tuple(s.get("cell", ())) == (cell["row"], cell["col"])), None)
             if sash is not None and sash.get("inner_rect"):
                 rx1, ry1, rx2, ry2 = sash["inner_rect"]
-                # для створки — стеклопакет расширяется наружу на overlap на брусок створки
-                fx1 = float(rx1) - glazing_overlap
-                fy1 = float(ry1) - glazing_overlap
-                fx2 = float(rx2) + glazing_overlap
-                fy2 = float(ry2) + glazing_overlap
-                # нормализуем
+                # для створки — посадочная линия = inner_rect (штапик на створке), заполнение внутри -5
                 rx1, rx2 = (min(float(rx1), float(rx2)), max(float(rx1), float(rx2)))
                 ry1, ry2 = (min(float(ry1), float(ry2)), max(float(ry1), float(ry2)))
+                fx1 = rx1 + falz_inset
+                fy1 = ry1 + falz_inset
+                fx2 = rx2 - falz_inset
+                fy2 = ry2 - falz_inset
             else:
-                # глухое — ячейка расширяется наружу на раму/импост
+                # глухое — посадочная линия = cell, заполнение внутри -5 (фалец)
                 rx1, ry1, rx2, ry2 = float(cell["x1"]), float(cell["y1"]), float(cell["x2"]), float(cell["y2"])
                 rx1, rx2 = (min(rx1, rx2), max(rx1, rx2))
                 ry1, ry2 = (min(ry1, ry2), max(ry1, ry2))
-                fx1 = rx1 - glazing_overlap
-                fy1 = ry1 - glazing_overlap
-                fx2 = rx2 + glazing_overlap
-                fy2 = ry2 + glazing_overlap
+                fx1 = rx1 + falz_inset
+                fy1 = ry1 + falz_inset
+                fx2 = rx2 - falz_inset
+                fy2 = ry2 - falz_inset
             if fx2 - fx1 < 10 or fy2 - fy1 < 10:
                 continue
             poly = [(fx1, fy1), (fx2, fy1), (fx2, fy2), (fx1, fy2)]
@@ -1958,6 +1950,7 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
             w_s = f"{int(w) if float(w).is_integer() else round(w,1)}"
             h_s = f"{int(h) if float(h).is_integer() else round(h,1)}"
             txt = f"{w_s}х{h_s}"
+            # Текст внутри заполнения, не на линиях рам/импостов: внутри на 8 мм от угла заполнения
             tx = fx1 + 8
             ty = fy1 + 8
             fillings.append({"cell": (cell["row"], cell["col"]), "rect": (fx1, fy1, fx2, fy2), "poly": poly, "w": w, "h": h, "text": txt, "pos": (tx, ty)})
