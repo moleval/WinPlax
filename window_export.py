@@ -1581,8 +1581,10 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     if bead_width_val is None or bead_width_val < 0:
         bead_width_val = 25.0
 
-    # 6. Створки (двухконтурные + ГОСТ-стрелки)
-    sashes = calc_sashes(cells, so, sw)
+    # 6. Створки (двухконтурные + ГОСТ-стрелки) — с учётом штапика: суммарный наплав = so + bead_width_val
+    # По ТЗ: рама 60, штапик 20, наплав 8 => створка заходит на 28, снаружи видимая 52 (80-28), изнутри 60+20
+    _sash_total_overlap = float(so) + float(bead_width_val) if float(bead_width_val) > 1e-9 else float(so)
+    sashes = calc_sashes(cells, _sash_total_overlap, sw)
 
     # 6b. Доработка: для вида снаружи рама/импосты обрезают створку и косые засечки
     # Т.е. видимая часть створки ограничена ячейкой (cell), наружный контур и 45° засечки
@@ -1729,7 +1731,7 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     }
 
     # 8. Атрибуты блока — доработка: сливаем в одну строку (6 шт.)
-    # Было 8: OBJECT, WINDOW_NAME, COLOR_OUT, COLOR_IN, GLAZING, SIZE_W, SIZE_H, GRID
+    # Было 8: OBJECT, WINDOW_NAME, COLOR_OUT, COLOR_IN, GLAZING, SIZE_W, SIZE_H, GRID -> стало 6 с SYSTEM
     # Стало 6: Тестовый объект / ОК-1/1 шт. / RAL8017/RAL9016 / Заполнение СПД42 / 1500х1500 / 3х2
     meta = params.get("metadata", {})
     # Количество — по умолчанию 1 шт., можно задать quantity в metadata или params
@@ -1768,17 +1770,22 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     view_for_size = str(params.get("view", "OUTSIDE")).upper()
     view_str_for_size = "Снаружи" if view_for_size == "OUTSIDE" else "Изнутри"
     size_combined = f"{int(ow) if ow.is_integer() else ow}х{int(oh) if oh.is_integer() else oh} {view_str_for_size}"
-    grid_combined = f"{cols}х{rows}"
+    # Система вместо сетки — по ТЗ изменение атрибута GRID -> SYSTEM
+    system_val = str(params.get("system") or _sys_name_tmp or "")
+    # Если профиль имеет человекочитаемое имя, можно использовать его, но оставляем ID для однозначности
+    # Для отображения: если system_val пустой, подставим "-"
+    if not system_val:
+        system_val = "-"
     object_val = str(meta.get("object", "Тестовый объект"))
-    # Порядок (сверху вниз): OBJECT / WINDOW / COLOR / SIZE+вид / GLAZING / GRID
-    # По правке: SIZE/вид поднят на строку выше, GLAZING опущен ниже
+    # Порядок (сверху вниз): OBJECT / WINDOW / COLOR / SIZE+вид / GLAZING / SYSTEM
+    # По правке: SIZE/вид поднят на строку выше, GLAZING опущен ниже, GRID заменён на SYSTEM
     attdefs = [
         ("OBJECT", "Объект", object_val),
         ("WINDOW", "Окно / кол-во", window_combined),
         ("COLOR", "Цвет", colors_combined),
         ("SIZE", "Габарит", size_combined),
         ("GLAZING", "Заполнение", glazing_val),
-        ("GRID", "Сетка", grid_combined),
+        ("SYSTEM", "Система", system_val),
     ]
 
     # Имя блока: "Объект Название окна Габаритные размеры Вид"
@@ -1824,7 +1831,9 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
     if view_for_bead == "OUTSIDE":
         bead_polys = []  # снаружи штапик скрыт — не рисуем
     elif bw > 1e-9:
-        # Собираем множество ячеек со створкой, чтобы не рисовать раму/импост в этих ячейках
+        # По ТЗ для ABSTRACT: рама 60+штапик20 => снаружи 60, изнутри 40+20; импост 80+20*2 => снаружи 80, изнутри 20+40+20
+        # Т-образный заход импоста в раму — 20 (bead) уже реализован в 5a
+        # Штапик — наружу от ячейки/створки на 20 (на раму/импост/створку), митра 45°
         sash_cells_set = set()
         for _s in sashes:
             try:
@@ -1833,7 +1842,8 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
                     sash_cells_set.add(_rc)
             except Exception:
                 pass
-        # Глухие ячейки — штапик по ячейке (4 полосы)
+        # Глухие ячейки — штапик наружу от ячейки на раму/импост (20), с митрой 45°
+        # Видимая рама изнутри 40+20, импост 20+40+20, снаружи 60/80
         for cell in cells:
             if (cell["row"], cell["col"]) in sash_cells_set:
                 continue
@@ -1841,19 +1851,23 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
                 x1, y1, x2, y2 = float(cell["x1"]), float(cell["y1"]), float(cell["x2"]), float(cell["y2"])
                 x1, x2 = (min(x1, x2), max(x1, x2))
                 y1, y2 = (min(y1, y2), max(y1, y2))
-                if x2 - x1 <= 2 * bw + 1e-9 or y2 - y1 <= 2 * bw + 1e-9:
+                if x2 - x1 <= 1e-9 or y2 - y1 <= 1e-9:
                     continue
-                # Низ — трапеция с митрой 45° по углам ячейки (диагональ стеклопакета)
-                bead_polys.append([(x1, y1), (x2, y1), (x2 - bw, y1 + bw), (x1 + bw, y1 + bw)])
-                # Верх
-                bead_polys.append([(x1, y2), (x1 + bw, y2 - bw), (x2 - bw, y2 - bw), (x2, y2)])
-                # Лево
-                bead_polys.append([(x1, y1), (x1 + bw, y1 + bw), (x1 + bw, y2 - bw), (x1, y2)])
-                # Право
-                bead_polys.append([(x2, y1), (x2, y2), (x2 - bw, y2 - bw), (x2 - bw, y1 + bw)])
+                # Низ — наружу вниз на раму/импост: outer y1-bw длиннее, inner y1 короче
+                bead_polys.append([(x1, y1), (x2, y1), (x2 + bw, y1 - bw), (x1 - bw, y1 - bw)])
+                # Верх — наружу вверх
+                bead_polys.append([(x1, y2), (x1 - bw, y2 + bw), (x2 + bw, y2 + bw), (x2, y2)])
+                # Лево — наружу влево
+                bead_polys.append([(x1, y1), (x1 - bw, y1 - bw), (x1 - bw, y2 + bw), (x1, y2)])
+                # Право — наружу вправо
+                bead_polys.append([(x2, y1), (x2, y2), (x2 + bw, y2 + bw), (x2 + bw, y1 - bw)])
             except Exception:
                 pass
-        # Створки: по inner_rect — 4 полосы с митрой 45° внутрь светового проёма (штапик заходит на брусок створки)
+        # Створки: штапик вокруг стекла на створке (80+20) — наружу от inner_rect? Для створки 80+20:
+        # снаружи видимая от рамы/импоста 80-20-8=52 (заход 28), изнутри 60+20, находит на 28
+        # Штапик на створке — между стеклом и профилем створки, 20 на профиле, митра 45°
+        # inner_rect — световой проём створки (стекло), bead — на профиле створки вокруг стекла
+        # Для створки низ — наружу вниз? Для створки профиль снизу, стекло выше, bead между ними: outer at glass edge y1 (длиннее), inner at y1-bw (короче) вниз на профиль
         for sash in sashes:
             try:
                 ir = sash.get("inner_rect")
@@ -1864,14 +1878,14 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
                 sy1, sy2 = (min(sy1, sy2), max(sy1, sy2))
                 if sx2 - sx1 <= 2 * bw + 1e-9 or sy2 - sy1 <= 2 * bw + 1e-9:
                     continue
-                # Низ створки
-                bead_polys.append([(sx1, sy1), (sx2, sy1), (sx2 - bw, sy1 + bw), (sx1 + bw, sy1 + bw)])
-                # Верх
-                bead_polys.append([(sx1, sy2), (sx1 + bw, sy2 - bw), (sx2 - bw, sy2 - bw), (sx2, sy2)])
-                # Лево
-                bead_polys.append([(sx1, sy1), (sx1 + bw, sy1 + bw), (sx1 + bw, sy2 - bw), (sx1, sy2)])
-                # Право
-                bead_polys.append([(sx2, sy1), (sx2, sy2), (sx2 - bw, sy2 - bw), (sx2 - bw, sy1 + bw)])
+                # Низ створки — между стеклом и профилем снизу: outer at glass y1 (длиннее), inner at y1-bw (короче) вниз на профиль
+                bead_polys.append([(sx1, sy1), (sx2, sy1), (sx2 - bw, sy1 - bw), (sx1 + bw, sy1 - bw)])
+                # Верх — выше стекла: outer at y2 длиннее, inner at y2+bw короче вверх на профиль
+                bead_polys.append([(sx1 + bw, sy2 + bw), (sx2 - bw, sy2 + bw), (sx2, sy2), (sx1, sy2)])
+                # Лево — левее стекла: outer at x1 длиннее (стекло), inner at x1-bw короче влево на профиль
+                bead_polys.append([(sx1, sy1), (sx1, sy2), (sx1 - bw, sy2 - bw), (sx1 - bw, sy1 + bw)])
+                # Право — правее стекла: outer at x2 длиннее, inner at x2+bw короче вправо на профиль
+                bead_polys.append([(sx2, sy1), (sx2, sy2), (sx2 + bw, sy2 - bw), (sx2 + bw, sy1 + bw)])
             except Exception:
                 pass
     # 7d. Заполнение — стеклопакет (слой Невидимые, штриховой, скрыт под штапиком)
@@ -2438,7 +2452,7 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
 
     # 10. Добавление 6 ATTDEF в блок (слитые строки, доработка ТЗ 0.2)
     # Доработка: вынести выше окна, выровнять по левому углу (x=0, y=OH+...)
-    # Атрибуты: OBJECT / WINDOW(ОК-1/1 шт.) / COLOR(RAL8017/RAL9016) / GLAZING(Заполнение СПД42) / SIZE(1500х1500) / GRID(3х2)
+    # Атрибуты: OBJECT / WINDOW(ОК-1/1 шт.) / COLOR(RAL8017/RAL9016) / GLAZING(Заполнение СПД42) / SIZE(1500х1500 Снаружи) / SYSTEM(ABSTRACT...)
     oh = model["opening"]["height"]
     ow = model["opening"]["width"]
     # Слой для размеров — Размеры, стиль — Основной стиль (увеличенные габариты)
@@ -2573,7 +2587,7 @@ def export_to_dxf(model: dict[str, Any], output_path: str | Path, template_path:
     height_attr = 30.0  # увеличенный размер текста атрибутов (было 22)
     n_attrs = len(model["attdefs"])
     for idx, (tag, prompt, value) in enumerate(model["attdefs"]):
-        # idx 0 = OBJECT -> самый верхний (y_start + (n-1)*step), idx 5 = GRID -> самый нижний (y_start)
+        # idx 0 = OBJECT -> самый верхний (y_start + (n-1)*step), idx 5 = SYSTEM -> самый нижний (y_start)
         y = y_attr_start + (n_attrs - 1 - idx) * step
         blk.add_attdef(
             tag=tag,

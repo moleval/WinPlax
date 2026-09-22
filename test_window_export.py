@@ -215,7 +215,7 @@ else:
                     self.assertIn(entity.dxf.layer, ("Основной", "Размеры", "Окна"), f"DIMENSION в ModelSpace на слое размеров")
 
         def test_06_attributes_values(self):
-            """Сценарий 6: 6 атрибутов с корректными значениями (слитые строки) — GRID 3х2 кириллица"""
+            """Сценарий 6: 6 атрибутов с корректными значениями (слитые строки) — SYSTEM ABSTRACT кириллица для SIZE"""
             doc = ezdxf.readfile("output/ОК-1.dxf")
             model = build_window_model(self.params)
             block_name = model["block_name"]
@@ -228,14 +228,14 @@ else:
                 "COLOR": "RAL8017/RAL9016",
                 "SIZE": "1500х1500 Снаружи",
                 "GLAZING": "Заполнение СПД42",
-                "GRID": "3х2",
+                "SYSTEM": "ABSTRACT_60_80_25",
             }
             for tag, exp_val in expected_tags.items():
                 self.assertIn(tag, attdefs, f"Тег {tag} должен присутствовать в ATTDEF")
                 self.assertEqual(attdefs[tag].dxf.text, exp_val, f"Значение атрибута {tag}")
                 self.assertNotIn("?", attdefs[tag].dxf.text, f"В тексте {tag} не должно быть '?'")
-                # Проверка что SIZE и GRID используют кириллицу х (U+0445) как в примере
-                if tag in ("GRID", "SIZE"):
+                # Проверка что SIZE использует кириллицу х (U+0445) как в примере; SYSTEM — имя системы без х
+                if tag in ("SIZE",):
                     self.assertIn("х", attdefs[tag].dxf.text)
                     self.assertNotIn("×", attdefs[tag].dxf.text)
             # Проверка атрибутов у INSERT
@@ -268,20 +268,20 @@ else:
                 self.assertNotIn("?", att.dxf.text)
             # Проверка порядка сверху вниз: Объект самый верхний, Сетка самая нижняя (как было)
             oh = self.params["opening"]["height"]
-            # Ожидаемый порядок сверху вниз (SIZE/вид поднят выше GLAZING)
-            expected_order = ["OBJECT", "WINDOW", "COLOR", "SIZE", "GLAZING", "GRID"]
+            # Ожидаемый порядок сверху вниз (SIZE/вид поднят выше GLAZING, GRID заменён на SYSTEM)
+            expected_order = ["OBJECT", "WINDOW", "COLOR", "SIZE", "GLAZING", "SYSTEM"]
             actual_order = [a.dxf.tag for a in attdefs]  # уже отсортировано сверху вниз
             self.assertEqual(actual_order, expected_order, f"Порядок атрибутов сверху вниз должен быть {expected_order}, получили {actual_order}")
-            # Проверка координат: самый верхний OBJECT на OH+60+5*50, самый нижний GRID на OH+60, шаг 50
+            # Проверка координат: самый верхний OBJECT на OH+60+5*50, самый нижний SYSTEM на OH+60, шаг 50
             step = 50.0
             n = len(attdefs)
-            y_bottom = float(oh) + 60.0  # GRID
+            y_bottom = float(oh) + 60.0  # SYSTEM
             y_top = y_bottom + (n-1)*step  # OBJECT
             first = [a for a in attdefs if a.dxf.tag == "OBJECT"][0]
-            last = [a for a in attdefs if a.dxf.tag == "GRID"][0]
+            last = [a for a in attdefs if a.dxf.tag == "SYSTEM"][0]
             self.assertAlmostEqual(first.dxf.insert.x, 0.0, delta=1e-6, msg="X OBJECT должен быть 0 (левый угол)")
             self.assertAlmostEqual(first.dxf.insert.y, y_top, delta=1e-6, msg=f"Y OBJECT (верхний) должен быть OH+60+{(n-1)}*45 = {y_top}")
-            self.assertAlmostEqual(last.dxf.insert.y, y_bottom, delta=1e-6, msg=f"Y GRID (нижний) должен быть OH+60 = {y_bottom}")
+            self.assertAlmostEqual(last.dxf.insert.y, y_bottom, delta=1e-6, msg=f"Y SYSTEM (нижний) должен быть OH+60 = {y_bottom}")
             # Проверка шага 50 между соседними сверху вниз
             sorted_by_y = sorted(attdefs, key=lambda e: e.dxf.insert.y, reverse=True)
             for i in range(len(sorted_by_y)-1):
@@ -738,17 +738,17 @@ else:
                 self.assertEqual(len([e for e in errs2 if "continuous" in e]), 0, f"Алиас {alias} должен валидироваться")
 
         def test_17_bead(self):
-            """Сценарий 17: Штапик — единый параметр системы 25 мм по умолчанию, одинаков для рамы/импостов/створок, валидация; OUTSIDE не рисуется, INSIDE с митрой 45°"""
+            """Сценарий 17: Штапик — единый параметр системы 20 мм для ABSTRACT (25 по умолчанию для других), одинаков, одинаков для рамы/импостов/створок, валидация; OUTSIDE не рисуется, INSIDE с митрой 45°"""
             base = copy.deepcopy(self.params)
             # OUTSIDE по умолчанию — штапик не рисуется
             base_out = copy.deepcopy(base); base_out["view"] = "OUTSIDE"
             m_out = build_window_model(base_out)
-            self.assertEqual(m_out["bead_width"], 25.0)
+            self.assertEqual(m_out["bead_width"], 20.0)
             self.assertEqual(len(m_out["bead_polys"]), 0, "Снаружи штапик не должен генерироваться (OUTSIDE)")
             # INSIDE — штапик должен присутствовать с митрой 45°
             base_in = copy.deepcopy(base); base_in["view"] = "INSIDE"
             m_def = build_window_model(base_in)
-            self.assertEqual(m_def["bead_width"], 25.0)
+            self.assertEqual(m_def["bead_width"], 20.0)
             self.assertGreater(len(m_def["bead_polys"]), 0, "Штапик должен генерировать полигоны для INSIDE")
             # Рама: 4 полосы трапеции 45°
             fxs = [p[0] for p in m_def["frame_inner"]]; fys = [p[1] for p in m_def["frame_inner"]]
@@ -963,20 +963,31 @@ else:
             bw = m_in_nosash["bead_width"]
             fxs = [p[0] for p in m_in_nosash["frame_inner"]]; fys = [p[1] for p in m_in_nosash["frame_inner"]]
             fx1, fx2 = min(fxs), max(fxs); fy1, fy2 = min(fys), max(fys)
-            bottom_beads = [poly for poly in m_in_nosash["bead_polys"] if abs(min(p[1] for p in poly) - fy1) < 1e-6 and abs(max(p[1] for p in poly) - (fy1+bw)) < 1e-6 and min(p[0] for p in poly) >= fx1-1e-6 and max(p[0] for p in poly) <= fx2+1e-6]
-            self.assertGreaterEqual(len(bottom_beads), 1, "Должна быть нижняя полоса рамы (для глухих ячеек)")
+            # По новому ТЗ штапик наружу от ячейки на раму/импост 20: низ рамы y1-bw .. y1, mitre 45°
+            bottom_beads = [poly for poly in m_in_nosash["bead_polys"] if abs(min(p[1] for p in poly) - (fy1-bw)) < 1e-6 and abs(max(p[1] for p in poly) - fy1) < 1e-6 and min(p[0] for p in poly) >= fx1 - bw -1e-6 and max(p[0] for p in poly) <= fx2 + bw +1e-6]
+            self.assertGreaterEqual(len(bottom_beads), 1, "Должна быть нижняя полоса рамы (для глухих ячеек) наружу 20")
             for bb in bottom_beads:
-                self.assertAlmostEqual(min(p[1] for p in bb), fy1, delta=1e-6)
-                self.assertAlmostEqual(max(p[1] for p in bb), fy1 + bw, delta=1e-6)
-                self.assertAlmostEqual(bb[0][1], fy1, delta=1e-6)
-                self.assertAlmostEqual(bb[1][1], fy1, delta=1e-6)
-                self.assertAlmostEqual(bb[2][1], fy1 + bw, delta=1e-6)
-                self.assertAlmostEqual(bb[3][1], fy1 + bw, delta=1e-6)
-                self.assertAlmostEqual(bb[2][0], bb[1][0] - bw, delta=1e-6)
-                self.assertAlmostEqual(bb[3][0], bb[0][0] + bw, delta=1e-6)
-            has_left = any(abs(min(p[0] for p in b) - fx1) < 1e-6 for b in bottom_beads)
-            has_right = any(abs(max(p[0] for p in b) - fx2) < 1e-6 for b in bottom_beads)
-            self.assertTrue(has_left and has_right, "Нижние полосы должны упираться в левый и правый край рамы")
+                self.assertAlmostEqual(min(p[1] for p in bb), fy1 - bw, delta=1e-6)
+                self.assertAlmostEqual(max(p[1] for p in bb), fy1, delta=1e-6)
+                # Митра 45° наружу: outer y1-bw длиннее, inner y1 короче
+                # Проверяем что нижняя outer шире inner на bw с каждой стороны
+                xs_min = min(p[0] for p in bb); xs_max = max(p[0] for p in bb)
+                # outer y = fy1-bw, inner y = fy1
+                # outer span = fx2 - fx1 + 2*bw, inner = fx2 - fx1
+                # Проверяем диагональ: outer x = inner x +/- bw
+                # Найдём точки на y1 и y1-bw
+                pts_at_fy1 = [pt for pt in bb if abs(pt[1] - fy1) < 1e-6]
+                pts_at_fy1_bw = [pt for pt in bb if abs(pt[1] - (fy1-bw)) < 1e-6]
+                self.assertEqual(len(pts_at_fy1), 2)
+                self.assertEqual(len(pts_at_fy1_bw), 2)
+                # inner короче outer на bw с каждой стороны
+                inner_xs = sorted([pt[0] for pt in pts_at_fy1])
+                outer_xs = sorted([pt[0] for pt in pts_at_fy1_bw])
+                self.assertAlmostEqual(inner_xs[0] - outer_xs[0], bw, delta=1e-6)
+                self.assertAlmostEqual(outer_xs[1] - inner_xs[1], bw, delta=1e-6)
+            has_left = any(abs(min(p[0] for p in b) - (fx1 - bw)) < 1e-6 for b in bottom_beads)
+            has_right = any(abs(max(p[0] for p in b) - (fx2 + bw)) < 1e-6 for b in bottom_beads)
+            self.assertTrue(has_left and has_right, "Нижние полосы должны выступать на bw за край рамы (митра)")
             # Для проверки импостов и створок используем модель со створками (как было)
             base_in = copy.deepcopy(base)
             base_in["view"] = "INSIDE"
