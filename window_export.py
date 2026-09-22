@@ -1764,16 +1764,20 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
         else:
             # например "42" -> СПД42
             glazing_val = f"Заполнение СПД{g_str}"
-    # Габарит — сливаем WхH кириллицей х (U+0445) как в примере 1500х1500
-    size_combined = f"{int(ow) if ow.is_integer() else ow}х{int(oh) if oh.is_integer() else oh}"
+    # Габарит + вид — сливаем WхH и вид (Снаружи/Изнутри) как в примере 1500х1500 Снаружи, поднимаем на строку выше Заполнения
+    view_for_size = str(params.get("view", "OUTSIDE")).upper()
+    view_str_for_size = "Снаружи" if view_for_size == "OUTSIDE" else "Изнутри"
+    size_combined = f"{int(ow) if ow.is_integer() else ow}х{int(oh) if oh.is_integer() else oh} {view_str_for_size}"
     grid_combined = f"{cols}х{rows}"
     object_val = str(meta.get("object", "Тестовый объект"))
+    # Порядок (сверху вниз): OBJECT / WINDOW / COLOR / SIZE+вид / GLAZING / GRID
+    # По правке: SIZE/вид поднят на строку выше, GLAZING опущен ниже
     attdefs = [
         ("OBJECT", "Объект", object_val),
         ("WINDOW", "Окно / кол-во", window_combined),
         ("COLOR", "Цвет", colors_combined),
-        ("GLAZING", "Заполнение", glazing_val),
         ("SIZE", "Габарит", size_combined),
+        ("GLAZING", "Заполнение", glazing_val),
         ("GRID", "Сетка", grid_combined),
     ]
 

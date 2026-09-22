@@ -226,8 +226,8 @@ else:
                 "OBJECT": "Тестовый объект",
                 "WINDOW": "ОК-1/1 шт.",
                 "COLOR": "RAL8017/RAL9016",
+                "SIZE": "1500х1500 Снаружи",
                 "GLAZING": "Заполнение СПД42",
-                "SIZE": "1500х1500",
                 "GRID": "3х2",
             }
             for tag, exp_val in expected_tags.items():
@@ -268,8 +268,8 @@ else:
                 self.assertNotIn("?", att.dxf.text)
             # Проверка порядка сверху вниз: Объект самый верхний, Сетка самая нижняя (как было)
             oh = self.params["opening"]["height"]
-            # Ожидаемый порядок сверху вниз
-            expected_order = ["OBJECT", "WINDOW", "COLOR", "GLAZING", "SIZE", "GRID"]
+            # Ожидаемый порядок сверху вниз (SIZE/вид поднят выше GLAZING)
+            expected_order = ["OBJECT", "WINDOW", "COLOR", "SIZE", "GLAZING", "GRID"]
             actual_order = [a.dxf.tag for a in attdefs]  # уже отсортировано сверху вниз
             self.assertEqual(actual_order, expected_order, f"Порядок атрибутов сверху вниз должен быть {expected_order}, получили {actual_order}")
             # Проверка координат: самый верхний OBJECT на OH+60+5*50, самый нижний GRID на OH+60, шаг 50
