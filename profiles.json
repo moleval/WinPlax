@@ -31,13 +31,15 @@
     "sash_profile_width": 80,
     "sash_overlap": 5,
     "bead": [6.5, 14.5],
-    "bead_default": 14.5,
-    "bead_width": 14.5,
+    "bead_depth": [6.5, 14.5],
+    "bead_default": 20,
+    "bead_width": 20,
+    "bead_visible": 20,
     "overlap": 5,
     "glazing": [32, 40],
     "combo": 112,
     "axis": 13,
-    "description": "REHAU Grazio 70/5кам, рама 63/55, створка Z57, импост 76, штапики 6.5/14.5, нахлест 5/8"
+    "description": "REHAU Grazio 70/5кам, рама 63/55, створка Z57, импост 76, штапики глубина 6.5/14.5 под СП32/40, видимая высота 20 для фасада"
   },
   "EXPROF_PROFECTA_S571_70": {
     "name": "EXPROF Profecta S571 70",
