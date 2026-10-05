@@ -1631,10 +1631,10 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
             # Обновим outer_rect для консистентности? Оставляем как есть для других нужд, но индикация теперь от ячейки
             # sash["outer_rect"] остаётся старым (с наплавом), но для OUTSIDE видимый — ячейка
 
-    # 6c. Зеркальность: вид снаружи и изнутри зеркальны по вертикальной оси (сейчас нет)
-    # При виде изнутри окно зеркалится относительно вертикальной оси проёма (X -> OW - X)
-    # Атрибуты, размеры и т.п. не зеркалятся, только геометрия окна
-    if str(params.get("view", "OUTSIDE")).upper() == "INSIDE":
+    # 6c. Зеркальность: вид снаружи и изнутри — геометрия НЕ зеркалится по X (FIX слева остаётся слева)
+    # Ранее зеркалили X -> OW-X, что меняло местами широкую/узкую колонки (как на первом скрине с красными стрелками).
+    # По исправленному варианту (второй скрин без стрелок) left/right сохраняются географически.
+    if False and str(params.get("view", "OUTSIDE")).upper() == "INSIDE":
         def _mirror_pt(pt: tuple[float, float]) -> tuple[float, float]:
             return (float(ow) - float(pt[0]), float(pt[1]))
         def _mirror_line(a: tuple[float, float], b: tuple[float, float]):
@@ -1670,9 +1670,9 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
         # (фактически sill_poly зеркалится так же, но результат тот же прямоугольник)
 
 
-    # 7. Подставочный профиль (зеркалится для INSIDE как и остальная геометрия)
+    # 7. Подставочный профиль — для INSIDE оставляем без зеркала (симметричен)
     sill_poly = calc_sill(params, ow, s)
-    if str(params.get("view", "OUTSIDE")).upper() == "INSIDE" and sill_poly:
+    if False and str(params.get("view", "OUTSIDE")).upper() == "INSIDE" and sill_poly:
         sill_poly = [(float(ow) - x, y) for x, y in sill_poly]
 
     # 7b. Доборы (расширители) — слева/справа/сверху, толщина как в params.addons
@@ -1706,8 +1706,8 @@ def build_window_model(params: dict[str, Any]) -> dict[str, Any]:
         addon_top_rect = [(x0_t, frame_top), (x1_t, frame_top), (x1_t, oh - s), (x0_t, oh - s)]
         # Если есть боковые доборы, верхний добор идёт над ними? Для простоты — на всю ширину, боковые уже учтены по y1_a = frame_top
         addons.append(addon_top_rect)
-    # Зеркало для INSIDE: отражаем все доборы по X
-    if view_addon == "INSIDE" and addons:
+    # Зеркало для INSIDE: ранее отражали по X, теперь без зеркала (географический left/right)
+    if False and view_addon == "INSIDE" and addons:
         addons = [[(float(ow) - x, y) for x, y in poly] for poly in addons]
         # также обновим отдельные rect для размеров
         if addon_left_rect:
