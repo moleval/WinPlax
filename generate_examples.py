@@ -240,17 +240,29 @@ def make_examples():
         if len(ex) > 5:
             ex[5]["bead"] = {"width": 30}
         for i in [8,9,10,11]:
-            ex[i]["system"] = "EXPROF_PROFECTA_S571_70"
-            ex[i]["frame"] = {"face_width": 60, "face_height": 60}
-            cont = ex[i]["mullion"].get("continuous", "auto")
-            # для 11 оставим широкий 100 как демо
-            if i == 10:
-                # ex[10] уже vertical 100
+            # EXPROF S571 по PDF PP_571_seria: рама 58 S571.01, импост 77 S571.03, створка 76 S571.02, штапик S358 20, наплав 8 (сумма 28)
+            # Для Profecta Plus (S571.11 63 / S571.13 82 / S571.12 77) см. профиль EXPROF_PROFECTA_PLUS_S571_70 — примеры 09/11 могут быть PLUS
+            if i in [8, 9]:  # 09-10 классика 58/77 по PDF
+                ex[i]["system"] = "EXPROF_PROFECTA_S571_70"
+                ex[i]["frame"] = {"face_width": 58, "face_height": 58}
+                cont = ex[i]["mullion"].get("continuous", "auto")
+                ex[i]["mullion"] = {"width": 77, "height": 77, "continuous": cont}
+                ex[i]["sash"] = {"overlap": 8, "profile_width": 76}
+                ex[i]["bead"] = {"width": 20}
+            elif i == 10:  # 11 демо широкий импост 100 как был, но на базе S571 классика
+                ex[i]["system"] = "EXPROF_PROFECTA_S571_70"
+                cont = ex[i]["mullion"].get("continuous", "auto")
                 ex[i]["mullion"] = {"width": 100, "height": 100, "continuous": cont}
-            else:
-                ex[i]["mullion"] = {"width": 74, "height": 74, "continuous": cont}
-            ex[i]["sash"] = {"overlap": 8, "profile_width": 80}
-            ex[i]["bead"] = {"width": 20}
+                ex[i]["frame"] = {"face_width": 58, "face_height": 58}
+                ex[i]["sash"] = {"overlap": 8, "profile_width": 76}
+                ex[i]["bead"] = {"width": 20}
+            else:  # i==11 — 12-й пример: Profecta Plus 63/82/77 для демонстрации эволюции
+                ex[i]["system"] = "EXPROF_PROFECTA_PLUS_S571_70"
+                cont = ex[i]["mullion"].get("continuous", "auto")
+                ex[i]["mullion"] = {"width": 82, "height": 82, "continuous": cont}
+                ex[i]["frame"] = {"face_width": 63, "face_height": 63}
+                ex[i]["sash"] = {"overlap": 8, "profile_width": 77}
+                ex[i]["bead"] = {"width": 20}
         # 11 отдельно 20 уже
         ex[10]["bead"] = {"width": 20}
 

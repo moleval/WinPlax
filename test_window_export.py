@@ -1012,18 +1012,26 @@ else:
 
             # Створки INSIDE — тоже 4 полосы с митрой
             sash_beads = 0
+            bw_sash = float(m_in.get("bead_width", 25))
             for sash in m_in["sashes"]:
                 ir = sash.get("inner_rect")
                 if not ir: continue
                 sx1,sy1,sx2,sy2 = ir
-                # ищем соответствующую полосу штапика вокруг створки
+                sx1n, sx2n = min(sx1,sx2), max(sx1,sx2)
+                sy1n = min(sy1,sy2)
+                # штапик створки — outer larger: (sx1-bw, sy1-bw)-(sx2+bw, sy1-bw)-(sx2, sy1)-(sx1, sy1) и т.д.
+                # ищем нижнюю полосу створки (y = sy1 и y = sy1-bw) с x = sx1-bw .. sx2+bw
                 for poly in m_in["bead_polys"]:
-                    if min(p[0] for p in poly) >= min(sx1,sx2)-1e-6 and max(p[0] for p in poly) <= max(sx1,sx2)+1e-6:
-                        # возможно створка
-                        if any(abs(p[1]-sy1)<1e-6 for p in poly):
+                    xs = [pp[0] for pp in poly]
+                    ys = [pp[1] for pp in poly]
+                    # нижняя полоса створки: две точки на sy1 и две на sy1-bw
+                    has_sy1 = any(abs(y - sy1n) < 1e-6 for y in ys)
+                    has_sy1_bw = any(abs(y - (sy1n - bw_sash)) < 1e-6 for y in ys)
+                    if has_sy1 and has_sy1_bw:
+                        if abs(min(xs) - (sx1n - bw_sash)) < 1e-6 and abs(max(xs) - (sx2n + bw_sash)) < 1e-6:
                             sash_beads +=1
                             break
-            self.assertGreater(sash_beads, 0, "Для створок должен быть штапик с митрой")
+            self.assertGreater(sash_beads, 0, "Для створок должен быть штапик с митрой (outer larger)")
 
             # DXF INSIDE: штапик присутствует (как LINE из-за обрезки створкой или LWPOLYLINE)
             with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as tmp:

@@ -14,7 +14,10 @@
     "bead": 20,
     "bead_width": 20,
     "overlap": 8,
-    "glazing": [32, 42],
+    "glazing": [
+      32,
+      42
+    ],
     "axis": 13,
     "description": "Абстрактная система для совместимости, как в ТЗ 0.2"
   },
@@ -30,35 +33,173 @@
     "sash": 73,
     "sash_profile_width": 80,
     "sash_overlap": 5,
-    "bead": [6.5, 14.5],
-    "bead_depth": [6.5, 14.5],
+    "bead": [
+      6.5,
+      14.5
+    ],
+    "bead_depth": [
+      6.5,
+      14.5
+    ],
     "bead_default": 20,
     "bead_width": 20,
     "bead_visible": 20,
     "overlap": 5,
-    "glazing": [32, 40],
+    "glazing": [
+      32,
+      40
+    ],
     "combo": 112,
     "axis": 13,
     "description": "REHAU Grazio 70/5кам, рама 63/55, створка Z57, импост 76, штапики глубина 6.5/14.5 под СП32/40, видимая высота 20 для фасада"
   },
   "EXPROF_PROFECTA_S571_70": {
-    "name": "EXPROF Profecta S571 70",
+    "name": "EXPROF Profecta S571 70 (по каталогу PP_571_seria.pdf)",
     "depth": 70,
-    "frame": 60,
-    "frame_face_width": 60,
-    "frame_face_height": 60,
-    "mullion": 74,
-    "mullion_width": 74,
-    "mullion_height": 74,
-    "sash": 74,
-    "sash_profile_width": 80,
+    "mounting_depth": 70,
+    "system_width": 70,
+    "frame": 58,
+    "frame_face_width": 58,
+    "frame_face_height": 58,
+    "frame_art": "S571.01",
+    "mullion": 77,
+    "mullion_width": 77,
+    "mullion_height": 77,
+    "mullion_art": "S571.03",
+    "sash": 76,
+    "sash_profile_width": 76,
+    "sash_art": "S571.02",
     "sash_overlap": 8,
     "bead": "S358",
+    "bead_art": [
+      "S358.04 16мм СП32",
+      "S358.20 16мм СП32",
+      "S358.05 13мм СП42",
+      "S358.17 8мм СП40",
+      "S246.04 24мм"
+    ],
     "bead_default": 20,
     "bead_width": 20,
+    "bead_visible": 20,
     "overlap": 8,
-    "glazing": [24, 32, 40, 44],
-    "axis": [9, 13],
-    "description": "EXPROF S571 Profecta 70/5кам, S358 штапики, ось 9/13"
+    "total_overlap": 28,
+    "glazing": [
+      24,
+      32,
+      40,
+      42
+    ],
+    "glazing_clamping": 15,
+    "axis": [
+      9,
+      13
+    ],
+    "axis_art": [
+      "S571.02 9мм",
+      "S571.22 13мм (Aero)"
+    ],
+    "cameras": 5,
+    "class_wall": "B",
+    "class_climate": "I (М)",
+    "thermal_resistance": 0.81,
+    "durability": 60,
+    "aero_version_depth": 101,
+    "armature": {
+      "frame": "АП571.01 Jx1.46",
+      "sash": "207 Jx1.8",
+      "mullion": "606 Jx1.4 Jy0.5",
+      "corner": "655 Jx7.33"
+    },
+    "combo_width_frame_sash": 120,
+    "combo_width_mullion_sash": 125,
+    "compatible_series": [
+      "S358 Practica",
+      "S670"
+    ],
+    "description": "EXPROF Profecta S571 70/5кам низкопрофильная (+ светопрозрачность), белый/тонированная/ламенированная, EPDM/TPE, штапики S358, 4 остекления 24/32/40/42, ось 9/13, усиленный импост с арм 20х38 отдельно (см PLUS)"
+  },
+  "EXPROF_PROFECTA_PLUS_S571_70": {
+    "name": "EXPROF Profecta Plus S571 70",
+    "depth": 70,
+    "mounting_depth": 70,
+    "system_width": 70,
+    "frame": 63,
+    "frame_face_width": 63,
+    "frame_face_height": 63,
+    "frame_art": "S571.11 (Profecta+ 63мм, 6.5м)",
+    "mullion": 82,
+    "mullion_width": 82,
+    "mullion_height": 82,
+    "mullion_art": "S571.13 (Profecta+ 82мм, 6.5м) / S571.23 усиленный",
+    "mullion_reinforced_art": "S571.23 усиленный Jx удвоен, армирование 20×38×2мм",
+    "sash": 77,
+    "sash_profile_width": 77,
+    "sash_art": [
+      "S571.12 77мм 9мм-аз (546м)",
+      "S571.22 77мм 13мм-аз противовзломная"
+    ],
+    "sash_overlap": 8,
+    "bead": "S358",
+    "bead_art": [
+      "S358.04/20 и др.",
+      "S246.04 24мм"
+    ],
+    "bead_default": 20,
+    "bead_width": 20,
+    "bead_visible": 20,
+    "overlap": 8,
+    "total_overlap": 28,
+    "glazing": [
+      24,
+      30,
+      32,
+      40,
+      44
+    ],
+    "glazing_max": 44,
+    "glazing_clamping": 15,
+    "axis": [
+      9,
+      13
+    ],
+    "cameras": 5,
+    "class_wall": "B",
+    "class_climate": "I (М)",
+    "thermal_resistance": 0.81,
+    "durability": 60,
+    "aero_version_depth": 101,
+    "aero_sash_art": [
+      "S571.12 9мм",
+      "S571.22 13мм"
+    ],
+    "armature": {
+      "frame": "АП571.01",
+      "sash": "207",
+      "mullion_standard": "606",
+      "mullion_reinforced": "20×38×2 (усиленный 571.23)",
+      "corner": "655"
+    },
+    "connectors": {
+      "impost_metal": "V571.03",
+      "impost_plastic": "V571.03-стеклопластик",
+      "corner_pipe": "S358.12+S358.13"
+    },
+    "expanders": [
+      "S358.08 рамный",
+      "S358.18 расширитель 58→61",
+      "S358.23 угол 90° 42.2 + арм 655",
+      "S358.21 подкладной 31",
+      "S358.22 откосный",
+      "S358.09 универсальный приёмно-подкладной"
+    ],
+    "shtulp": "S570.19 (9мм) / S670.19 (13мм)",
+    "compatible_series": [
+      "S358 Practica (штапики/доборы)",
+      "S670 (расширители)"
+    ],
+    "combo_width_frame_sash": 120,
+    "combo_width_mullion_sash": 125,
+    "shtapik_series": "S358",
+    "description": "EXPROF Profecta Plus S571 70/5кам модернизированная поставка: рама 63 S571.11, створка 77 S571.12/22 (9/13мм), импост 82 S571.13 и усиленный S571.23 (арм 20×38×2, вдвое жёстче), штапики S358, стеклопакеты 24/30/32/40/44, совместимость с доборами S358/S670, R =0.81, 60 лет, B I(М)"
   }
 }
