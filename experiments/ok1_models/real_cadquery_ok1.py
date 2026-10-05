@@ -40,10 +40,10 @@ ow, oh = W-2*S, H-2*S
 
 # Вычислим как в WinPlax
 import sys
-sys.path.insert(0, "/home/user/WinPlax")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import json
 from window_export import build_window_model
-params=json.load(open("/home/user/WinPlax/params.json", encoding="utf-8"))
+params=json.load(open(Path(__file__).resolve().parents[2] / "params.json", encoding="utf-8"))
 m=build_window_model(params)
 print(f"WinPlax OK-1 grid cell {m['grid']['cell_w']:.1f}x{m['grid']['cell_h']:.1f} mullions V={len(m['mullions_v'])} H={len(m['mullions_h'])}")
 
@@ -88,7 +88,7 @@ if HAS_CQ:
 
         # Вариант S571
         try:
-            params2=json.load(open("/home/user/WinPlax/params.json"))
+            params2=json.load(open(Path(__file__).resolve().parents[2] / "params.json"))
             params2["frame"]={"face_width":58,"face_height":58}
             params2["mullion"]={"width":77,"height":77,"continuous":"auto"}
             params2["system"]="EXPROF_PROFECTA_S571_70"

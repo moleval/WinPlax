@@ -39,12 +39,12 @@ def run_ok1_variant(name, opening_w, opening_h, clearance, frame_w, frame_depth,
     for b in boxes:
         print(f"    {b.kind:6} x={b.x:7.1f} z={b.z:7.1f} dx={b.dx:6.1f} dz={b.dz:6.1f} dy={b.dy}")
     # Теперь сравним с WinPlax
-    sys.path.insert(0, "/home/user/WinPlax")
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     import json
     from window_export import build_window_model
     # Для сравнения используем те же frame/mullion (но WindowFrames muntin включает только импост, без bead)
     # WinPlax params
-    win_params = json.load(open("/home/user/WinPlax/params.json", encoding="utf-8"))
+    win_params = json.load(open(Path(__file__).resolve().parents[2] / "params.json", encoding="utf-8"))
     # Подменим под вариант
     win_params["opening"]["width"]=opening_w
     win_params["opening"]["height"]=opening_h
