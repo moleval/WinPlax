@@ -1,3 +1,5 @@
 __pycache__/
 *.py[cod]
 *$py.class
+experiments/ok1_models/repos/
+experiments/ok1_models/__pycache__/

@@ -1,0 +1,263 @@
+{
+  "vliesgevel_3fields": {
+    "preset": "vliesgevel",
+    "lengteMm": 1440,
+    "diepteMm": 150,
+    "binnenzijde": "rechts",
+    "expliciet": true,
+    "stijlen": [
+      {
+        "index": 0,
+        "rol": "begin",
+        "posMm": 25,
+        "type": "alu-50x150",
+        "breedteMm": 50,
+        "diepteMm": 150,
+        "vanMm": 0,
+        "totMm": 50
+      },
+      {
+        "index": 1,
+        "rol": "tussen",
+        "posMm": 480,
+        "type": "alu-50x150",
+        "breedteMm": 50,
+        "diepteMm": 150,
+        "vanMm": 455,
+        "totMm": 505
+      },
+      {
+        "index": 2,
+        "rol": "tussen",
+        "posMm": 960,
+        "type": "alu-50x150",
+        "breedteMm": 50,
+        "diepteMm": 150,
+        "vanMm": 935,
+        "totMm": 985
+      },
+      {
+        "index": 3,
+        "rol": "eind",
+        "posMm": 1415,
+        "type": "alu-50x150",
+        "breedteMm": 50,
+        "diepteMm": 150,
+        "vanMm": 1390,
+        "totMm": 1440
+      }
+    ],
+    "velden": [
+      {
+        "index": 0,
+        "vanMm": 0,
+        "totMm": 480,
+        "breedteMm": 480,
+        "dagVanMm": 50,
+        "dagTotMm": 455,
+        "dagMm": 405,
+        "paneel": {
+          "type": "glas"
+        }
+      },
+      {
+        "index": 1,
+        "vanMm": 480,
+        "totMm": 960,
+        "breedteMm": 480,
+        "dagVanMm": 505,
+        "dagTotMm": 935,
+        "dagMm": 430,
+        "paneel": {
+          "type": "glas"
+        }
+      },
+      {
+        "index": 2,
+        "vanMm": 960,
+        "totMm": 1440,
+        "breedteMm": 480,
+        "dagVanMm": 985,
+        "dagTotMm": 1390,
+        "dagMm": 405,
+        "paneel": {
+          "type": "glas"
+        }
+      }
+    ]
+  },
+  "kozijn_3fields": {
+    "preset": "kozijn",
+    "lengteMm": 1440,
+    "diepteMm": 114,
+    "binnenzijde": "rechts",
+    "expliciet": true,
+    "stijlen": [
+      {
+        "index": 0,
+        "rol": "begin",
+        "posMm": 33.5,
+        "type": "hout-67x114",
+        "breedteMm": 67,
+        "diepteMm": 114,
+        "vanMm": 0,
+        "totMm": 67
+      },
+      {
+        "index": 1,
+        "rol": "tussen",
+        "posMm": 480,
+        "type": "hout-67x114",
+        "breedteMm": 67,
+        "diepteMm": 114,
+        "vanMm": 446.5,
+        "totMm": 513.5
+      },
+      {
+        "index": 2,
+        "rol": "tussen",
+        "posMm": 960,
+        "type": "hout-67x114",
+        "breedteMm": 67,
+        "diepteMm": 114,
+        "vanMm": 926.5,
+        "totMm": 993.5
+      },
+      {
+        "index": 3,
+        "rol": "eind",
+        "posMm": 1406.5,
+        "type": "hout-67x114",
+        "breedteMm": 67,
+        "diepteMm": 114,
+        "vanMm": 1373,
+        "totMm": 1440
+      }
+    ],
+    "velden": [
+      {
+        "index": 0,
+        "vanMm": 0,
+        "totMm": 480,
+        "breedteMm": 480,
+        "dagVanMm": 67,
+        "dagTotMm": 446.5,
+        "dagMm": 379.5,
+        "paneel": {
+          "type": "glas"
+        }
+      },
+      {
+        "index": 1,
+        "vanMm": 480,
+        "totMm": 960,
+        "breedteMm": 480,
+        "dagVanMm": 513.5,
+        "dagTotMm": 926.5,
+        "dagMm": 413,
+        "paneel": {
+          "type": "glas"
+        }
+      },
+      {
+        "index": 2,
+        "vanMm": 960,
+        "totMm": 1440,
+        "breedteMm": 480,
+        "dagVanMm": 993.5,
+        "dagTotMm": 1373,
+        "dagMm": 379.5,
+        "paneel": {
+          "type": "glas"
+        }
+      }
+    ]
+  },
+  "winplax_custom": {
+    "preset": "vliesgevel",
+    "lengteMm": 1440,
+    "diepteMm": 70,
+    "binnenzijde": "rechts",
+    "expliciet": true,
+    "stijlen": [
+      {
+        "index": 0,
+        "rol": "begin",
+        "posMm": 30,
+        "type": "winplax-60x70",
+        "breedteMm": 60,
+        "diepteMm": 70,
+        "vanMm": 0,
+        "totMm": 60
+      },
+      {
+        "index": 1,
+        "rol": "tussen",
+        "posMm": 486.666,
+        "type": "winplax-80x70",
+        "breedteMm": 80,
+        "diepteMm": 70,
+        "vanMm": 446.666,
+        "totMm": 526.6659999999999
+      },
+      {
+        "index": 2,
+        "rol": "tussen",
+        "posMm": 953.3319999999999,
+        "type": "winplax-80x70",
+        "breedteMm": 80,
+        "diepteMm": 70,
+        "vanMm": 913.3319999999999,
+        "totMm": 993.3319999999999
+      },
+      {
+        "index": 3,
+        "rol": "eind",
+        "posMm": 1410,
+        "type": "winplax-60x70",
+        "breedteMm": 60,
+        "diepteMm": 70,
+        "vanMm": 1380,
+        "totMm": 1440
+      }
+    ],
+    "velden": [
+      {
+        "index": 0,
+        "vanMm": 0,
+        "totMm": 486.666,
+        "breedteMm": 486.666,
+        "dagVanMm": 60,
+        "dagTotMm": 446.666,
+        "dagMm": 386.666,
+        "paneel": {
+          "type": "glas"
+        }
+      },
+      {
+        "index": 1,
+        "vanMm": 486.666,
+        "totMm": 953.3319999999999,
+        "breedteMm": 466.6659999999999,
+        "dagVanMm": 526.6659999999999,
+        "dagTotMm": 913.3319999999999,
+        "dagMm": 386.66599999999994,
+        "paneel": {
+          "type": "glas"
+        }
+      },
+      {
+        "index": 2,
+        "vanMm": 953.3319999999999,
+        "totMm": 1440,
+        "breedteMm": 486.6680000000001,
+        "dagVanMm": 993.3319999999999,
+        "dagTotMm": 1380,
+        "dagMm": 386.6680000000001,
+        "paneel": {
+          "type": "glas"
+        }
+      }
+    ]
+  }
+}
